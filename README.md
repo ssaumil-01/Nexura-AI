@@ -84,6 +84,8 @@ Prompt → Create Project → plan.md → Build → Run → Debug → (V3: Commi
 
 ## 5. plan.md (MASTER CONTROL FILE)
 
+Will Convert into Nosql database in V2+ for better management.
+
 Structure:
 · Project metadata
 · Step-by-step tasks
@@ -110,6 +112,7 @@ Example:
 
 ### 6.2 Coder Agent
 
+· Access: Has access to plan.md (nosql database in future) and RAG context.
 · Purpose: Execute one task at a time
 · Allowed Actions: read_file, write_file
 · Constraints: One file per step; Must follow plan
