@@ -112,7 +112,6 @@ Example:
 
 ### 6.2 Coder Agent
 
-· Access: Has access to plan.md (nosql database in future) and RAG context.
 · Purpose: Execute one task at a time
 · Allowed Actions: read_file, write_file
 · Constraints: One file per step; Must follow plan
