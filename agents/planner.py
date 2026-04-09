@@ -2,8 +2,7 @@ import os
 import re
 from typing import Optional
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
-
+from google import genai
 load_dotenv()
 
 PLANNER_PROMPT_TEMPLATE = """You are an expert software architect and planning agent.
@@ -81,19 +80,8 @@ Break the user request into a sequence of atomic steps that can be executed inde
 """
 
 class PlannerAgent:
-    def __init__(self, llm_client=None):
-        """
-        Initialize PlannerAgent.
-        :param llm_client: An instantiated LLM client. If None, initializes InferenceClient from .env
-        """
-        if llm_client:
-            self.llm_client = llm_client
-        else:
-            api_key = os.getenv("PLANNER_AGENT_API_KEY")
-            if api_key:
-                self.llm_client = InferenceClient(api_key=api_key)
-            else:
-                self.llm_client = None
+    def __init__(self):
+        pass
 
     def plan(self, user_prompt: str, project_path: str) -> Optional[str]:
         """
@@ -132,28 +120,26 @@ class PlannerAgent:
         return PLANNER_PROMPT_TEMPLATE.format(user_prompt=user_prompt)
 
     def call_llm(self, prompt: str) -> str:
-        """
-        Call the LLM using Hugging Face InferenceClient for deepseek-ai/DeepSeek-R1.
-        """
-        if self.llm_client:
-            try:
-                response = self.llm_client.chat.completions.create(
-                    model="Qwen/Qwen3-Coder-Next",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=8192,
-                    temperature=0.2
-                )
-                msg = response.choices[0].message
-                content = getattr(msg, "content", "") or ""
-                reasoning = getattr(msg, "reasoning", "") or ""
-                
-                return content.strip() if content.strip() else reasoning.strip()
-            except Exception as e:
-                print(f"LLM API Error: {e}")
-                return ""
+        try:
+            api_key = os.getenv("GOOGLE_API_KEY")
+            model_name = os.getenv("PLANNER_MODEL_NAME")
+
+            if not api_key:
+                raise ValueError("Missing GOOGLE_API_KEY in .env")
+
+            client = genai.Client(api_key=api_key)
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+
+            return response.text.strip()
+
+        except Exception as e:
+            print(f"Gemini API Error: {e}")
+            return ""
         
-        # Example dummy response if no client is provided:
-        return "[ ] Step 1: Initialize project\n[ ] Step 2: Create main.py\n"
 
     def validate_output(self, output: str) -> bool:
         """
