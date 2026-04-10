@@ -1,176 +1,238 @@
 import os
 import re
-from typing import Optional
+import json
+from typing import Optional, List, Literal, Union, Any
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
 from google import genai
+from google.genai import types
+
 load_dotenv()
 
-PLANNER_PROMPT_TEMPLATE = """You are an expert software architect and planning agent.
+PROMPT_TEMPLATE = """You are a senior software architect designing execution plans for an autonomous AI system.
 
-Your task is to convert a user request into a highly detailed, step-by-step execution plan for an autonomous coding system.
+Your task is to convert a user request into a STRICT, structured execution plan.
 
-The system will execute ONE step at a time, so your plan must be extremely precise, granular, and unambiguous.
+⚠️ IMPORTANT:
+You MUST return ONLY valid JSON.
+Do NOT include explanations, markdown, or extra text.
+Your response will be parsed automatically and ANY deviation will break the system.
+
+========================
+📦 OUTPUT FORMAT (STRICT)
+========================
+
+{format_instructions}
 
 ========================
 🎯 OBJECTIVE
 ========================
-Break the user request into a sequence of atomic steps that can be executed independently.
+
+Break the user request into a sequence of SMALL, ATOMIC, EXECUTABLE steps.
+
+Each step must represent EXACTLY ONE action.
 
 ========================
-📌 RULES (STRICT)
+📌 RULES (CRITICAL)
 ========================
 
-1. Each step must represent ONLY ONE action.
-   - One file creation OR one file modification OR one command.
-
-2. Each step must be small and executable.
-   ❌ BAD: "Build authentication system"
-   ✅ GOOD: "Create auth.py"
-
-3. Steps must be sequential and logically ordered.
-
-4. Do NOT combine multiple actions in one step.
+1. ONE STEP = ONE ACTION
    ❌ BAD: "Create main.py and add routes"
    ✅ GOOD:
       Step 1: Create main.py
       Step 2: Add route to main.py
 
-5. Use explicit file names and paths wherever possible.
+2. MAKE STEPS ATOMIC
+   Each step must be independently executable.
 
-6. Include dependency installation steps (e.g., pip install) when required.
+3. USE EXPLICIT ACTION TYPES ONLY:
+   - create_file
+   - modify_file
+   - install_dependency
+   - run_command
+   - create_directory
 
-7. Include execution steps (e.g., run server) at the end.
+4. TARGET FIELD MUST MATCH ACTION:
+   - create_file → file path
+   - modify_file → file path
+   - install_dependency → command
+   - run_command → command
+   - create_directory → directory path
 
-8. Avoid vague words:
-   ❌ "setup", "handle", "implement", "optimize"
-   ✅ "create", "add", "write", "define"
+5. DO NOT USE VAGUE WORDS:
+   ❌ "setup", "handle", "implement"
+   ✅ "create", "add", "write", "define", "install"
 
-9. Do NOT assume hidden steps.
-   Include everything required to make the project runnable.
+6. INCLUDE ALL REQUIRED STEPS:
+   - file creation
+   - dependency installation
+   - configuration
+   - execution (if needed)
 
-10. Do NOT write any code.
-    Only write the plan.
+7. DO NOT WRITE CODE
 
-========================
-📄 OUTPUT FORMAT (MANDATORY)
-========================
+8. STEP IDS:
+   - must start from 1
+   - must increment sequentially
 
-- Output MUST be in markdown checklist format.
-- Each step must follow EXACTLY this format:
-
-[ ] Step 1: <clear instruction>
-[ ] Step 2: <clear instruction>
-
-- Do NOT include explanations.
-- Do NOT include extra text before or after.
+9. DEPENDENCIES:
+   - use step_id references
+   - empty list if none
 
 ========================
 🧠 THINKING GUIDELINES
 ========================
 
-- Think like a senior developer breaking tasks for a junior developer.
-- Ensure that each step can be executed without needing future context.
-- Prefer more steps over fewer steps.
-- Ensure the final system is runnable.
+- Think like assigning tasks to a junior developer
+- Prefer MORE steps over fewer steps
+- Ensure final output is runnable
+- Avoid hidden assumptions
 
 ========================
 📥 USER REQUEST
 ========================
+
 {user_prompt}
 """
 
+class Target(BaseModel):
+    type: Literal["file", "directory", "command"] = Field(description="Type of the target: file, directory, or command")
+    value: str = Field(description="The path or command string")
+
+class Step(BaseModel):
+    step_id: int = Field(description="Step ID starting from 1, incrementing sequentially")
+    title: str = Field(description="Short title for the step")
+    description: str = Field(description="Detailed description of the step")
+    action_type: Literal["create_file", "modify_file", "install_dependency", "run_command", "create_directory"] = Field(description="Must be one of the explicitly allowed action types")
+    target: Target = Field(description="Target of the action containing type and value")
+    dependencies: List[int] = Field(description="List of step_ids this step depends on", default_factory=list)
+
+class ExecutionPlan(BaseModel):
+    project_id: str = Field(description="A unique ID for the project")
+    goal: str = Field(description="The main goal of the execution plan")
+    steps: List[Step] = Field(description="List of execution steps")
+
+
 class PlannerAgent:
     def __init__(self):
-        pass
+        # We configure the parser using the defined Pydantic model
+        self.parser = PydanticOutputParser(pydantic_object=ExecutionPlan)
+        
+        # We configure the PromptTemplate
+        self.prompt = PromptTemplate(
+            template=PROMPT_TEMPLATE,
+            input_variables=["user_prompt"],
+            partial_variables={"format_instructions": self.parser.get_format_instructions()}
+        )
+        
+        # Load environment variables
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+        self.model_name = os.getenv("PLANNER_MODEL_NAME", "gemini-2.5-pro")
 
-    def plan(self, user_prompt: str, project_path: str) -> Optional[str]:
+        if not self.api_key:
+            print("Warning: Missing GOOGLE_API_KEY in .env")
+            
+        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+
+    def call_llm(self, prompt: str) -> str:
+        """Call the Gemini LLM via google-genai directly."""
+        try:
+            if not self.client:
+                raise ValueError("GenAI Client is not initialized.")
+                
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                )
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"Gemini API Error: {e}")
+            raise e
+
+    def plan(self, user_prompt: str, project_path: str) -> Optional[ExecutionPlan]:
         """
         Complete execution flow:
         1. user input -> provided as user_prompt
         2. Build LLM Prompt
-        3. Call LLM
-        4. Get Output
-        5. Validate Output
-        6. Save
+        3. Call LLM (via google-genai directly)
+        4. Validate Output and Parse (Langchain Parser)
+        5. Save JSON & Markdown
         """
-        # 2. Build LLM Prompt
-        prompt = self.build_prompt(user_prompt)
-        
-        # 3. Call LLM & 4. Get Output
-        print("Calling LLM to generate plan...")
-        output = self.call_llm(prompt)
-        
-        if not output:
-            print("Error: Received empty output from LLM.")
+        if not self.client:
+            print("Error: GenAI Client not configured properly. Missing API key.")
             return None
-        
-        # 5. Validate Output
-        if not self.validate_output(output):
-            print("Error: Output failed validation. It must match the checklist format.")
-            return None
-        
-        # 6. Save
-        plan_path = self.save_plan(output, project_path)
-        print(f"Plan saved to {plan_path}")
-        
-        return output
 
-    def build_prompt(self, user_prompt: str) -> str:
-        """Construct the prompt using the configured template."""
-        return PLANNER_PROMPT_TEMPLATE.format(user_prompt=user_prompt)
-
-    def call_llm(self, prompt: str) -> str:
+        print("Calling LLM to generate execution plan...")
+        
         try:
-            api_key = os.getenv("GOOGLE_API_KEY")
-            model_name = os.getenv("PLANNER_MODEL_NAME")
-
-            if not api_key:
-                raise ValueError("Missing GOOGLE_API_KEY in .env")
-
-            client = genai.Client(api_key=api_key)
-
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-
-            return response.text.strip()
+            # Generate prompt with user request and formatting instructions
+            formatted_prompt = self.prompt.format(user_prompt=user_prompt)
+            
+            # Call LLM directly using google-genai
+            output_content = self.call_llm(formatted_prompt)
+            
+            # Parse output into Pydantic Model (this validates schemas)
+            plan_obj = self.parser.parse(output_content)
+            
+            print("Successfully validated generated plan schema.")
+            
+            # Save the plan (both JSON and Markdown for viewing)
+            md_path, json_path = self.save_plan(plan_obj, project_path)
+            print(f"Plan (JSON) saved to: {json_path}")
+            print(f"Plan (Markdown) saved to: {md_path}")
+            
+            return plan_obj
 
         except Exception as e:
-            print(f"Gemini API Error: {e}")
-            return ""
-        
+            print(f"Error during planning: {e}")
+            return None
 
-    def validate_output(self, output: str) -> bool:
+    def save_plan(self, plan: ExecutionPlan, project_path: str) -> tuple[str, str]:
         """
-        Validate that the output conforms to the mandatory checklist format:
-        [ ] Step X: <clear instruction>
-        """
-        # Search for at least one step matching the format
-        pattern = r"\[ \] Step \d+: .+"
-        if re.search(pattern, output):
-            return True
-        return False
-
-    def save_plan(self, plan_content: str, project_path: str) -> str:
-        """
-        Save the generated plan.md to the project workspace.
+        Save the generated plan to the project workspace both as JSON and Markdown.
         """
         # Ensure project directory exists
         os.makedirs(project_path, exist_ok=True)
         
-        plan_file = os.path.join(project_path, "plan.md")
-        with open(plan_file, "w", encoding="utf-8") as f:
-            f.write(plan_content)
+        # 1. Save JSON representation for programmatic use
+        json_file = os.path.join(project_path, "plan.json")
+        with open(json_file, "w", encoding="utf-8") as f:
+            f.write(plan.model_dump_json(indent=2))
             
-        return plan_file
+        # 2. Save Markdown representation for user readability
+        md_file = os.path.join(project_path, "plan.md")
+        md_content = self._generate_markdown(plan)
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write(md_content)
+            
+        return md_file, json_file
+
+    def _generate_markdown(self, plan: ExecutionPlan) -> str:
+        """
+        Generates a human-readable markdown version of the execution plan.
+        """
+        md = f"# Project: {plan.project_id}\n"
+        md += f"**Goal**: {plan.goal}\n\n"
+        md += "## Execution Steps\n\n"
+        
+        for step in plan.steps:
+            md += f"- [ ] {step.description}\n"
+            
+        return md
 
 if __name__ == "__main__":
     # Test Execution Flow
     planner = PlannerAgent()
-    sample_request = "Create a self-validating ai agent."
-    project_dir = os.path.join(os.path.dirname(__file__), "..", "workspace", "proj_001")
+    sample_request = "Create a FastAPI backend with a users route and dockerize it."
+    workspace_dir = os.path.join(os.path.dirname(__file__), "..", "workspace")
+    project_dir = os.path.join(workspace_dir, "proj_fastapi")
     
     generated_plan = planner.plan(sample_request, project_dir)
     if generated_plan:
-        print("Generated Plan:\n", generated_plan)
+        print("\nPlan object successfully returned.")
