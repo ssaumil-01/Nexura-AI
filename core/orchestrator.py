@@ -1,4 +1,5 @@
 import os
+
 import time
 from core.task_manager import TaskManager
 from core.validator import Validator
@@ -28,7 +29,7 @@ class Orchestrator:
                 if pending_count > 0:
                     print("[Orchestrator] Execution halted! Tasks are blocked by uncompleted dependencies.")
                 else:
-                    print("[Orchestrator] 🎉 All tasks successfully completed!")
+                    print("[Orchestrator] [*] All tasks successfully completed!")
                 break
 
             step_id = task["step_id"]
@@ -48,16 +49,15 @@ class Orchestrator:
             content = None
             if action_type in ["create_file", "modify_file"]:
                 print("[Orchestrator] Task requires content generation. Calling Coder Agent...")
-                content = self.coder_agent.generate_code(
+                agent_response = self.coder_agent.execute_step(
                     project_goal=self.task_manager.goal,
-                    action=action_type,
-                    target=target["value"],
-                    description=task["description"]
+                    task=task
                 )
-                if not content:
+                if not agent_response or "content" not in agent_response:
                     print(f"[Orchestrator] Coder Agent failed to generate content.")
                     self._handle_failure(step_id)
                     continue
+                content = agent_response.get("content")
             else:
                 print("[Orchestrator] Action is explicitly simple. Bypassing Agent.")
 
@@ -85,8 +85,8 @@ class Orchestrator:
 if __name__ == "__main__":
     # Test block
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    plan_path = os.path.join(base_dir, "workspace", "proj_fastapi", "plan.json")
-    workspace_path = os.path.join(base_dir, "workspace", "proj_fastapi")
+    plan_path = os.path.join(base_dir, "workspace", "proj_calculator", "plan.json")
+    workspace_path = os.path.join(base_dir, "workspace", "proj_calculator")
     
     if os.path.exists(plan_path):
         orchestrator = Orchestrator(plan_path, workspace_path)
