@@ -41,3 +41,9 @@ def run_command(base_path: str, command: str) -> str:
         raise RuntimeError(f"Command execution timed out after 15 seconds. Ensure the application is not waiting for user input.")
     except Exception as e:
         raise RuntimeError(f"Error executing command '{command}': {str(e)}")
+
+def install_dependency(base_path: str, command: str) -> str:
+    """Executes a dependency installation command."""
+    # This acts as an alias to run_command but can be extended with specific env checks.
+    print(f"[SystemTools] Installing dependency via command: {command}")
+    return run_command(base_path, command)

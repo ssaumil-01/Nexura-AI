@@ -1,6 +1,7 @@
 import os
-from tools.file_tools import create_directory, create_file, modify_file
-from tools.system_tools import run_command
+from tools.directory_tools import create_directory
+from tools.file_tools import create_file, write_file
+from tools.system_tools import run_command, install_dependency
 
 class ExecutionManager:
     def __init__(self, workspace_path: str):
@@ -8,42 +9,43 @@ class ExecutionManager:
         # Ensure workspace exists
         os.makedirs(self.workspace_path, exist_ok=True)
 
-    def execute_task(self, task: dict, content: str = None) -> bool:
+    def execute_tool_call(self, function_name: str, function_args: dict) -> tuple[bool, str]:
         """
-        Routes the validated task to the appropriate tool.
-        Returns True on success, False on failure.
+        Routes the native tool call arguments to the Python backend.
+        Returns (True, "Success") on success, (False, "Error message") on failure.
         """
-        action_type = task.get("action_type")
-        target_value = task.get("target", {}).get("value")
-
         try:
-            if action_type == "create_directory":
-                result = create_directory(self.workspace_path, target_value)
+            if function_name == "create_directory":
+                result = create_directory(self.workspace_path, function_args.get("target_dir", ""))
                 print(f"[ExecutionManager] Created directory: {result}")
                 
-            elif action_type == "create_file":
-                if content is None:
-                    raise ValueError("Content is required for creating a file.")
-                result = create_file(self.workspace_path, target_value, content)
+            elif function_name == "create_file":
+                result = create_file(self.workspace_path, function_args.get("target_file", ""), function_args.get("content", ""))
                 print(f"[ExecutionManager] Created file: {result}")
                 
-            elif action_type == "modify_file":
-                if content is None:
-                    raise ValueError("Content is required for modifying a file.")
-                result = modify_file(self.workspace_path, target_value, content)
+            elif function_name == "write_file":
+                result = write_file(self.workspace_path, function_args.get("target_file", ""), function_args.get("content", ""))
                 print(f"[ExecutionManager] Modified file: {result}")
                 
-            elif action_type in ["run_command", "install_dependency"]:
-                print(f"[ExecutionManager] Running command: {target_value}")
-                result = run_command(self.workspace_path, target_value)
+            elif function_name == "install_dependency":
+                target_cmd = function_args.get("target_value", "")
+                print(f"[ExecutionManager] Installing dependency: {target_cmd}")
+                result = install_dependency(self.workspace_path, target_cmd)
                 print(f"[ExecutionManager] Output:\n{result}")
-
+                
+            elif function_name == "run_command":
+                target_cmd = function_args.get("target_value", "")
+                print(f"[ExecutionManager] Running command: {target_cmd}")
+                result = run_command(self.workspace_path, target_cmd)
+                print(f"[ExecutionManager] Output:\n{result}")
+                
             else:
-                print(f"[ExecutionManager] Error: Unhandled action type '{action_type}'")
-                return False
+                print(f"[ExecutionManager] Error: Unhandled tool call '{function_name}'")
+                return False, f"Unhandled tool call '{function_name}'"
 
-            return True
+            return True, "Success"
 
         except Exception as e:
             print(f"[ExecutionManager] Execution failed: {e}")
-            return False
+            return False, str(e)
+
