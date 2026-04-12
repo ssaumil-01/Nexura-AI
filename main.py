@@ -1,38 +1,105 @@
 import os
 import argparse
-from agents.planner import PlannerAgent
-from core.orchestrator import Orchestrator
+from dotenv import load_dotenv
+
+from langgraph.types import Command
+from core.graph import build_graph
+import tools.file_tools as ft
+import tools.system_tools as st
+import tools.directory_tools as dt
+
+load_dotenv()
+
+
+def run_graph(graph, initial_state, config):
+    """Runs the graph with interrupt handling for plan review and tool approval."""
+    
+    # First run
+    for event in graph.stream(initial_state, config, stream_mode="updates"):
+        _print_event(event)
+    
+    # Handle interrupts (plan review loop + tool approvals)
+    while True:
+        # Check if graph is paused at an interrupt
+        snapshot = graph.get_state(config)
+        
+        if not snapshot.next:
+            # Graph finished — no more nodes to run
+            break
+        
+        # There's a pending interrupt — check what it is
+        if snapshot.tasks and snapshot.tasks[0].interrupts:
+            interrupt_value = snapshot.tasks[0].interrupts[0].value
+            print(f"\n>> {interrupt_value}")
+            user_input = input(">> ").strip()
+            
+            # Resume the graph with the user's input
+            for event in graph.stream(
+                Command(resume=user_input), config, stream_mode="updates"
+            ):
+                _print_event(event)
+        else:
+            break
+
+
+def _print_event(event):
+    """Prints tool execution results from graph events."""
+    for node_name, updates in event.items():
+        if node_name == "tools":
+            msgs = updates.get("messages", [])
+            for msg in msgs:
+                if hasattr(msg, "content") and hasattr(msg, "name"):
+                    print(f"  [{msg.name}] -> {msg.content[:200]}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Nexura AI - Autonomous Coding Agent")
-    parser.add_argument("--prompt", type=str, help="Natural language request for the project", required=False)
-    parser.add_argument("--project", type=str, help="Project name (e.g., 'proj_test')", required=True)
+    parser.add_argument("--prompt", type=str, required=True, help="Natural language request for the project")
+    parser.add_argument("--project", type=str, required=True, help="Project name (e.g., 'proj_test')")
+    parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop mode")
     
     args = parser.parse_args()
     
-    workspace_dir = os.path.join(os.path.dirname(__file__), "workspace")
-    project_dir = os.path.join(workspace_dir, args.project)
+    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
+    os.makedirs(workspace_path, exist_ok=True)
+    
+    # Set workspace path for all tool modules
+    ft.WORKSPACE_PATH = workspace_path
+    st.WORKSPACE_PATH = workspace_path
+    dt.WORKSPACE_PATH = workspace_path
+    
+    # Build the LangGraph pipeline
+    graph = build_graph(interactive=args.interactive)
+    
+    # Thread config for checkpointing
+    config = {"configurable": {"thread_id": args.project}}
+    
+    # Initial state
+    initial_state = {
+        "messages": [],
+        "user_prompt": args.prompt,
+        "workspace_path": workspace_path,
+        "plan": None,
+        "tasks": [],
+        "current_task_index": 0,
+        "execution_history": [],
+        "is_interactive": args.interactive,
+        "plan_feedback": None,
+        "tool_calls_count": 0,
+    }
+    
+    print(f"Nexura AI -- Starting project: {args.project}")
+    print(f"Mode: {'Interactive (HITL)' if args.interactive else 'Autonomous'}\n")
+    
+    run_graph(graph, initial_state, config)
+    
+    print("\n[OK] Pipeline complete!")
 
-    # Step 1: Run Planner if prompt is provided
-    if args.prompt:
-        print(f"--- [1] Running Planner ---")
-        planner = PlannerAgent()
-        plan = planner.plan(args.prompt, project_dir)
-        if not plan:
-            print("Planner failed to generate a plan. Exiting.")
-            return
-            
-    # Step 2: Run Orchestrator
-    print(f"\n--- [2] Running Orchestrator ---")
-    plan_path = os.path.join(project_dir, "plan.json")
-    if os.path.exists(plan_path):
-        orchestrator = Orchestrator(plan_path, project_dir)
-        orchestrator.run()
-    else:
-        print(f"Error: No generated plan found at {plan_path}. Provide a --prompt to plan it first.")
 
 if __name__ == "__main__":
     main()
 
 
-# python main.py --project "proj_calculator" --prompt "Create a calculator app using c++"
+# Usage:
+# python main.py --project "proj_calculator" --prompt "Create a calculator app using HTML, CSS and JS"
+# python main.py --project "proj_test" --prompt "Create a hello world python script" --interactive

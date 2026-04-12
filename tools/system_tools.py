@@ -1,49 +1,80 @@
+import os
 import subprocess
-import platform
+import threading
+from langchain_core.tools import tool
 
-def run_command(base_path: str, command: str) -> str:
-    """Safely executes a shell command restricted to the workspace cwd."""
-    
-    # On Windows, using powershell flawlessly handles linux-like paths (./executable) and aliases.
-    if platform.system() == "Windows":
-        cmd_args = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-        use_shell = False
-    else:
-        cmd_args = command
-        use_shell = True
+# Module-level workspace path — set dynamically by main.py before graph runs
+WORKSPACE_PATH = ""
 
+BLOCKED_COMMANDS = ["rm -rf", "sudo", "del /s /q", "format"]
+
+
+def _validate_command(command: str) -> str | None:
+    """Returns an error string if command is dangerous, None if OK."""
+    cmd_lower = command.lower()
+    for blocked in BLOCKED_COMMANDS:
+        if blocked in cmd_lower:
+            return f"ERROR: Blocked dangerous command sequence '{blocked}' in: {command}"
+    return None
+
+
+def _run_with_streaming(command: str, timeout: int = 60) -> str:
+    """Runs a command with real-time stdout/stderr streaming."""
     try:
-        # Added a 15-second timeout to prevent indefinite hanging on interactive prompts (e.g. std::cin)
-        result = subprocess.run(
-            cmd_args,
-            cwd=base_path,
-            shell=use_shell,
-            capture_output=True,
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            errors="replace",
-            timeout=15
+            cwd=WORKSPACE_PATH,
+            bufsize=1
         )
         
-        # Globally strip carriage returns which mangle console outputs on Windows
-        stdout_clean = result.stdout.replace('\r', '').strip()
-        stderr_clean = result.stderr.replace('\r', '').strip()
+        output_lines = []
         
-        if result.returncode != 0:
-            error_msg = f"Command '{command}' failed with exit code {result.returncode}.\n"
-            if stderr_clean:
-                error_msg += f"STDERR:\n{stderr_clean}\n"
-            if stdout_clean:
-                error_msg += f"STDOUT:\n{stdout_clean}\n"
-            raise RuntimeError(error_msg.strip('\n'))
-            
-        return stdout_clean
+        def read_output():
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:
+                    print(f"    | {line}")
+                    output_lines.append(line)
+        
+        reader_thread = threading.Thread(target=read_output, daemon=True)
+        reader_thread.start()
+        
+        process.wait(timeout=timeout)
+        reader_thread.join(timeout=2)
+        
+        output = "\n".join(output_lines)
+        
+        if process.returncode != 0:
+            return f"Command failed (exit code {process.returncode}):\n{output}"
+        return output if output.strip() else "Command executed successfully (no output)."
+        
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Command execution timed out after 15 seconds. Ensure the application is not waiting for user input.")
+        process.kill()
+        process.wait()
+        output = "\n".join(output_lines) if output_lines else ""
+        return f"ERROR: Command timed out after {timeout}s. Partial output:\n{output}"
     except Exception as e:
-        raise RuntimeError(f"Error executing command '{command}': {str(e)}")
+        return f"ERROR: {str(e)}"
 
-def install_dependency(base_path: str, command: str) -> str:
-    """Executes a dependency installation command."""
-    # This acts as an alias to run_command but can be extended with specific env checks.
-    print(f"[SystemTools] Installing dependency via command: {command}")
-    return run_command(base_path, command)
+
+@tool
+def run_command(command: str) -> str:
+    """Executes a safe shell command in the workspace directory.
+    IMPORTANT: The system runs on Windows. Use Windows commands (dir, type, del) not Linux (ls, cat, rm)."""
+    err = _validate_command(command)
+    if err:
+        return err
+    return _run_with_streaming(command, timeout=60)
+
+
+@tool
+def install_dependency(command: str) -> str:
+    """Installs a language or system dependency using the provided command (e.g. 'pip install requests', 'npm install')."""
+    err = _validate_command(command)
+    if err:
+        return err
+    return _run_with_streaming(command, timeout=120)

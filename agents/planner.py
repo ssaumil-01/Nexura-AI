@@ -39,38 +39,29 @@ Each step must represent EXACTLY ONE action.
 📌 RULES (CRITICAL)
 ========================
 
-1. ONE STEP = ONE ACTION
-   ❌ BAD: "Create main.py and add routes"
-   ✅ GOOD:
-      Step 1: Create main.py
-      Step 2: Add route to main.py
+1. ONE STEP = ONE LOGICAL UNIT OF WORK
+   The Coder Agent can call multiple tools per step, so steps should be logical goals.
+   ❌ BAD: "Step 1: Create index.html" → "Step 2: Write HTML structure" → "Step 3: Create style.css"
+   ✅ GOOD: "Step 1: Build the complete calculator UI (HTML + CSS + JS)"
 
-2. MAKE STEPS ATOMIC
-   Each step must be independently executable.
+2. KEEP PLANS CONCISE (3-5 STEPS)
+   Each step groups related work together. The Coder Agent handles the details.
 
-3. USE EXPLICIT ACTION TYPES ONLY:
-   - create_file
-   - modify_file
-   - install_dependency
-   - run_command
-   - create_directory
+3. EACH STEP HAS: step_id, title, description, dependencies
+   The Coder Agent decides which tools to use — you just describe WHAT to do.
 
-4. TARGET FIELD MUST MATCH ACTION:
-   - create_file → file path
-   - modify_file → file path
-   - install_dependency → command
-   - run_command → command
-   - create_directory → directory path
+4. DO NOT SPECIFY TOOLS OR FILE PATHS IN THE PLAN
+   The agent autonomously picks tools based on the task description.
 
 5. DO NOT USE VAGUE WORDS:
    ❌ "setup", "handle", "implement"
-   ✅ "create", "add", "write", "define", "install"
+   ✅ "create", "add", "write", "define", "install", "build"
 
 6. INCLUDE ALL REQUIRED STEPS:
-   - file creation
-   - dependency installation
-   - configuration
-   - execution (if needed)
+   - project setup (directories + files)
+   - dependency installation (if needed)
+   - core implementation
+   - testing / execution (if applicable)
 
 7. DO NOT WRITE CODE
 
@@ -86,8 +77,8 @@ Each step must represent EXACTLY ONE action.
 🧠 THINKING GUIDELINES
 ========================
 
-- Think like assigning tasks to a junior developer
-- Prefer MORE steps over fewer steps
+- Think like assigning tasks to a senior developer — give logical goals, not micro-instructions
+- Prefer FEWER high-level steps over many tiny ones
 - Ensure final output is runnable
 - Avoid hidden assumptions
 
@@ -98,16 +89,10 @@ Each step must represent EXACTLY ONE action.
 {user_prompt}
 """
 
-class Target(BaseModel):
-    type: Literal["file", "directory", "command"] = Field(description="Type of the target: file, directory, or command")
-    value: str = Field(description="The path or command string")
-
 class Step(BaseModel):
     step_id: int = Field(description="Step ID starting from 1, incrementing sequentially")
     title: str = Field(description="Short title for the step")
-    description: str = Field(description="Detailed description of the step")
-    action_type: Literal["create_file", "modify_file", "install_dependency", "run_command", "create_directory"] = Field(description="Must be one of the explicitly allowed action types")
-    target: Target = Field(description="Target of the action containing type and value")
+    description: str = Field(description="Detailed description of what to accomplish in this step")
     dependencies: List[int] = Field(description="List of step_ids this step depends on", default_factory=list)
 
 class ExecutionPlan(BaseModel):
@@ -155,11 +140,11 @@ class PlannerAgent:
             print(f"Gemini API Error: {e}")
             raise e
 
-    def plan(self, user_prompt: str, project_path: str) -> Optional[ExecutionPlan]:
+    def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None) -> Optional[ExecutionPlan]:
         """
         Complete execution flow:
         1. user input -> provided as user_prompt
-        2. Build LLM Prompt
+        2. Build LLM Prompt (with optional feedback from previous iteration)
         3. Call LLM (via google-genai directly)
         4. Validate Output and Parse (Langchain Parser)
         5. Save JSON & Markdown
@@ -168,11 +153,33 @@ class PlannerAgent:
             print("Error: GenAI Client not configured properly. Missing API key.")
             return None
 
-        print("Calling LLM to generate execution plan...")
+        if feedback and previous_plan:
+            print("Re-planning based on user feedback...")
+        else:
+            print("Calling LLM to generate execution plan...")
         
         try:
             # Generate prompt with user request and formatting instructions
             formatted_prompt = self.prompt.format(user_prompt=user_prompt)
+            
+            # If there is feedback from the user, append it to the prompt
+            if feedback and previous_plan:
+                import json
+                prev_plan_str = json.dumps(previous_plan, indent=2)
+                formatted_prompt += f"""
+
+========================
+PREVIOUS PLAN (REJECTED BY USER)
+========================
+{prev_plan_str}
+
+========================
+USER FEEDBACK
+========================
+{feedback}
+
+Please generate an IMPROVED plan that addresses the user's feedback above.
+"""
             
             # Call LLM directly using google-genai
             output_content = self.call_llm(formatted_prompt)
@@ -222,7 +229,9 @@ class PlannerAgent:
         md += "## Execution Steps\n\n"
         
         for step in plan.steps:
-            md += f"- [ ] {step.description}\n"
+            deps = f" (depends on: {step.dependencies})" if step.dependencies else ""
+            md += f"### Step {step.step_id}: {step.title}{deps}\n"
+            md += f"{step.description}\n\n"
             
         return md
 
