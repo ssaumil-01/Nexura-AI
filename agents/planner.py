@@ -115,7 +115,7 @@ class PlannerAgent:
         
         # Load environment variables
         self.api_key = os.getenv("GOOGLE_API_KEY")
-        self.model_name = os.getenv("PLANNER_MODEL_NAME", "gemini-2.5-pro")
+        self.model_name = os.getenv("PLANNER_MODEL_NAME")
 
         if not self.api_key:
             print("Warning: Missing GOOGLE_API_KEY in .env")

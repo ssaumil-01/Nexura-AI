@@ -95,3 +95,38 @@ def patch_file(target_file: str, search_text: str, replace_text: str) -> str:
         f.write(new_content)
     
     return f"Successfully patched {target_file} ({count} occurrence(s) replaced)."
+
+
+@tool
+def batch_file_operations(operations: list[dict]) -> str:
+    """Executes multiple file operations in a single tool call.
+    Supported operations: 'create', 'write', 'patch'.
+    Format: [{'operation': 'create', 'target_file': '...', 'content': '...'}, 
+             {'operation': 'patch', 'target_file': '...', 'search_text': '...', 'replace_text': '...'}]
+    """
+    results = []
+    for op in operations:
+        op_type = op.get("operation")
+        target = op.get("target_file")
+        
+        if not target:
+            results.append("ERROR: Missing 'target_file' in operation.")
+            continue
+            
+        if op_type == "create" or op_type == "write":
+            content = op.get("content", "")
+            # Reuse existing logic
+            res = write_file.invoke({"target_file": target, "content": content})
+            results.append(res)
+        elif op_type == "patch":
+            search = op.get("search_text")
+            replace = op.get("replace_text")
+            if search is None or replace is None:
+                results.append(f"ERROR: Missing search/replace text for patch: {target}")
+            else:
+                res = patch_file.invoke({"target_file": target, "search_text": search, "replace_text": replace})
+                results.append(res)
+        else:
+            results.append(f"ERROR: Unknown operation type '{op_type}' for {target}")
+            
+    return "\n".join(results)

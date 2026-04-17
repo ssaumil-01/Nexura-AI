@@ -2,6 +2,9 @@ import os
 import argparse
 from dotenv import load_dotenv
 
+# Activate LangSmith tracing before any LangChain/LangGraph imports
+import config  # noqa: F401  — side-effect: sets tracing env vars
+
 from langgraph.types import Command
 from core.graph import build_graph
 import tools.file_tools as ft
@@ -71,8 +74,17 @@ def main():
     # Build the LangGraph pipeline
     graph = build_graph(interactive=args.interactive)
     
-    # Thread config for checkpointing
-    config = {"configurable": {"thread_id": args.project}}
+    # Thread config for checkpointing + LangSmith metadata
+    mode_label = "interactive" if args.interactive else "autonomous"
+    config = {
+        "configurable": {"thread_id": args.project},
+        # LangSmith trace metadata — shows up in the dashboard
+        "metadata": {
+            "project": args.project,
+            "mode": mode_label,
+        },
+        "tags": ["nexura-ai", args.project, mode_label],
+    }
     
     # Initial state
     initial_state = {
@@ -94,6 +106,7 @@ def main():
     run_graph(graph, initial_state, config)
     
     print("\n[OK] Pipeline complete!")
+    print(f"\n---> LangSmith Traces: https://smith.langchain.com/o/default/projects/p/{args.project}")
 
 
 if __name__ == "__main__":

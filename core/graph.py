@@ -1,4 +1,5 @@
 import os
+from typing import Any
 import time
 from dotenv import load_dotenv
 
@@ -7,12 +8,13 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import interrupt, Command
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
 from core.state import NexuraState
 from core.context_builder import ContextBuilder
 
-from tools.file_tools import create_file, write_file, read_file, patch_file
+from tools.file_tools import create_file, write_file, read_file, patch_file, batch_file_operations
 from tools.directory_tools import create_directory, list_directory
 from tools.system_tools import run_command, install_dependency
 from tools.signals import task_complete
@@ -26,14 +28,23 @@ MAX_LLM_RETRIES = 3
 
 # ─── TOOLS ──────────────────────────────────────────────────
 
-all_tools = [create_file, write_file, read_file, patch_file,
+all_tools = [create_file, write_file, read_file, patch_file, batch_file_operations,
              create_directory, list_directory,
              run_command, install_dependency, task_complete]
 
 # ─── MODEL ──────────────────────────────────────────────────
 
-model_name = os.getenv("CODER_MODEL_NAME")
-llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
+def get_llm(model_name: str):
+    """Factory function to initialize the correct LLM provider."""
+    if any(m in model_name.lower() for m in ["llama", "mixtral", "gemma"]):
+        # Groq-based models
+        return ChatGroq(model=model_name, temperature=0.2)
+    else:
+        # Default to Google Generative AI
+        return ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
+
+coder_model_name = os.getenv("CODER_MODEL_NAME")
+llm = get_llm(coder_model_name)
 llm_with_tools = llm.bind_tools(all_tools)
 
 
@@ -134,11 +145,15 @@ def task_picker_node(state: NexuraState) -> dict:
     
     print(f"\n--- [Orchestrator] === Executing Task {task['step_id']}: {task['title']} === ---")
     
-    prompt = f"""You are an expert autonomous Coder Agent.
+    prompt = f"""You are an expert autonomous Coder Agent. Your goal is to complete the following task with MAXIMUM efficiency and HIGH quality.
 
-Execute the following task by invoking the appropriate tools.
-You may call MULTIPLE tools to complete this task.
-When you are done with ALL actions for this task, call `task_complete` with a summary.
+========================
+STRATEGY
+========================
+1. THINK FIRST: Start each response with a brief assessment of the current state and a plan of action.
+2. EFFICIENCY: Call MULTIPLE tools in a single turn. Use `batch_file_operations` for multiple file changes.
+3. EXPLORE: If you are unsure about the codebase structure or contents, use `list_directory` and `read_file` before making edits.
+4. VERIFY: When possible, use `run_command` or other tools to verify that your changes work as intended.
 
 ========================
 CURRENT TASK
@@ -152,7 +167,7 @@ PROJECT GOAL
 {state['plan'].get('goal', '')}
 
 ========================
-CURRENT WORKSPACE STATE
+WORKSPACE CONTEXT
 ========================
 {workspace_context}
 
@@ -162,28 +177,12 @@ RECENT EXECUTION HISTORY
 {history_summary}
 
 ========================
-AVAILABLE TOOLS
-========================
-- create_file: Create a new file
-- write_file: Overwrite an entire file
-- read_file: Read file contents
-- patch_file: Search-and-replace within a file (efficient for small edits)
-- create_directory: Create a directory
-- list_directory: List files/folders in a directory
-- run_command: Execute a shell command (WINDOWS - use dir, type, not ls, cat)
-- install_dependency: Install packages (npm install, pip install, etc.)
-- task_complete: Signal that this task is done
-
-========================
 RULES
 ========================
-1. Use the provided tools to complete this task completely.
-2. For file creation/modification, generate COMPLETE, FUNCTIONAL code.
-3. Do NOT wrap content in markdown code blocks — provide raw code only.
-4. You can call multiple tools in sequence to finish this task.
-5. Use patch_file instead of write_file when only changing a small part of a file.
-6. Use list_directory instead of run_command('dir') to see files.
-7. Call task_complete with a brief summary when ALL actions for this task are done.
+1. RAW CONTENT: When writing code to files, provide the RAW code. Do NOT wrap it in markdown code blocks like ```python ... ```.
+2. POWERSHELL: All commands run via `run_command` must be valid Windows PowerShell.
+3. BATCHING: Prefer `batch_file_operations` over multiple individual `write_file` or `patch_file` calls.
+4. COMPLETION: Only call `task_complete` after you have verified the task is fully resolved.
 """
     
     return {
@@ -284,7 +283,7 @@ def should_continue(state: NexuraState) -> str:
 
 # ─── GRAPH ASSEMBLY ─────────────────────────────────────────
 
-def build_graph(interactive: bool = False):
+def build_graph(interactive: bool = False, checkpointer: Any = None):
     """Builds and compiles the LangGraph StateGraph."""
     
     builder = StateGraph(NexuraState)
@@ -324,7 +323,9 @@ def build_graph(interactive: bool = False):
     builder.add_edge("advance_task", "task_picker")
     
     # Compile with checkpointing
-    checkpointer = InMemorySaver()
+    if checkpointer is None:
+        from langgraph.checkpoint.memory import InMemorySaver
+        checkpointer = InMemorySaver()
     
     # HITL: interrupt before tool execution in interactive mode
     # (plan review is handled by interrupt() inside review_plan_node)
