@@ -1,0 +1,35 @@
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  color: white;
+}
+
+.top {
+  flex: 1;
+  display: flex;
+}
+
+.sidebar {
+  width: 250px;
+  background: #252526;
+  padding: 10px;
+}
+
+.editor {
+  flex: 1;
+  background: #1e1e1e;
+  padding: 10px;
+}
+
+.bottom {
+  height: 200px;
+  background: #111;
+  padding: 10px;
+}
+
+button {
+  padding: 8px;
+  cursor: pointer;
+}
