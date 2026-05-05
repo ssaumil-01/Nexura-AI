@@ -2,12 +2,12 @@ import React, { useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/useAppStore';
+import { VscFiles, VscFolderOpened } from 'react-icons/vsc';
 import FileTree from '../file-tree/FileTree';
 
 const Sidebar: React.FC = () => {
   const setSelectedFolder = useAppStore((state) => state.setSelectedFolder);
   const selectedFolder = useAppStore((state) => state.selectedFolder);
-  const files = useAppStore((state) => state.files);
   const setFiles = useAppStore((state) => state.setFiles);
 
   // Fetch files whenever selectedFolder changes
@@ -46,7 +46,9 @@ const Sidebar: React.FC = () => {
 
   return (
     <aside className="sidebar">
-      <div className="section-header">Explorer</div>
+      <div className="section-header">
+        <VscFiles size={16} /> Explorer
+      </div>
       
       <div className="sidebar-actions">
         <button className="action-button" onClick={handleOpenFolder}>
@@ -56,9 +58,12 @@ const Sidebar: React.FC = () => {
 
       <div className="file-tree-container">
         {selectedFolder ? (
-          <FileTree files={files} />
+          <FileTree />
         ) : (
-          <div className="tree-placeholder">No folder selected</div>
+          <div className="tree-placeholder">
+            <VscFolderOpened size={32} style={{ opacity: 0.5 }} />
+            <span>No folder selected</span>
+          </div>
         )}
       </div>
     </aside>

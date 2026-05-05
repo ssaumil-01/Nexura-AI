@@ -18,6 +18,8 @@ from tools.file_tools import create_file, write_file, read_file, patch_file, bat
 from tools.directory_tools import create_directory, list_directory
 from tools.system_tools import run_command, install_dependency
 from tools.signals import task_complete
+from tools.search_tools import web_search
+from tools.verification_tools import verify_code_syntax, verify_webapp_endpoint
 
 load_dotenv()
 
@@ -30,7 +32,8 @@ MAX_LLM_RETRIES = 3
 
 all_tools = [create_file, write_file, read_file, patch_file, batch_file_operations,
              create_directory, list_directory,
-             run_command, install_dependency, task_complete]
+             run_command, install_dependency, task_complete,
+             web_search, verify_code_syntax, verify_webapp_endpoint]
 
 # ─── MODEL ──────────────────────────────────────────────────
 

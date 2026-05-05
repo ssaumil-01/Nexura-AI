@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { VscSend, VscRobot, VscPerson } from 'react-icons/vsc';
 
 interface Message {
   id: string;
@@ -9,7 +10,7 @@ interface Message {
 const ChatPanel: React.FC = () => {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: 'Hello! I am your AI coding assistant. How can I help you today?' },
+    { id: '1', role: 'assistant', content: 'Hello! I am your Nexura-AI coding assistant. How can I help you today?' },
   ]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -39,7 +40,7 @@ const ChatPanel: React.FC = () => {
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `I've received your message: "${input}". Since this is a UI-only demo, I'm just acknowledging it!`,
+        content: `I've received your message: "${input}". Since this is a UI demo, I'm just acknowledging it!`,
       };
       setMessages((prev) => [...prev, assistantMessage]);
     }, 1000);
@@ -56,9 +57,16 @@ const ChatPanel: React.FC = () => {
     <div className="chat-panel">
       <div className="chat-messages">
         {messages.map((msg) => (
-          <div key={msg.id} className={`chat-message ${msg.role}`}>
-            <div className="message-role">{msg.role === 'assistant' ? 'AI' : 'You'}</div>
-            <div className="message-content">{msg.content}</div>
+          <div key={msg.id} className={`chat-message-wrapper ${msg.role}`}>
+            <div className="message-header">
+              <div className={`message-avatar ${msg.role}`}>
+                {msg.role === 'assistant' ? <VscRobot /> : <VscPerson />}
+              </div>
+              <span className="message-role">{msg.role === 'assistant' ? 'Nexura AI' : 'You'}</span>
+            </div>
+            <div className={`chat-message ${msg.role}`}>
+              {msg.content}
+            </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
@@ -68,7 +76,7 @@ const ChatPanel: React.FC = () => {
         <input 
           type="text" 
           className="chat-input" 
-          placeholder="Type a message..." 
+          placeholder="Ask Nexura AI anything..." 
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyPress}
@@ -77,8 +85,9 @@ const ChatPanel: React.FC = () => {
           className="chat-send-button" 
           onClick={handleSend}
           disabled={!input.trim()}
+          title="Send message"
         >
-          Send
+          <VscSend size={18} />
         </button>
       </div>
     </div>

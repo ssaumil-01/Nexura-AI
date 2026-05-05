@@ -15,27 +15,30 @@ export const buildFileTree = (rootPath: string, flatFiles: FileEntry[]): TreeNod
   const root: TreeNode[] = [];
   const map: { [path: string]: TreeNode } = {};
 
-  // Sort files by path length to ensure parents are created before children (though not strictly necessary with this map approach)
+  // Normalize rootPath to use forward slashes
+  const normalizedRootPath = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
+
+  // Sort files by path length to ensure parents are created before children
   const sortedFiles = [...flatFiles].sort((a, b) => a.path.length - b.path.length);
 
   sortedFiles.forEach(file => {
+    const normalizedFilePath = file.path.replace(/\\/g, '/');
     const newNode: TreeNode = {
       name: file.name,
-      path: file.path,
+      path: file.path, // keep original path for backend calls
       is_dir: file.is_dir,
       children: []
     };
     
-    map[file.path] = newNode;
+    map[normalizedFilePath] = newNode;
 
     // Determine the parent path
-    // We assume the parent path is everything before the last separator
-    const pathParts = file.path.split(/[\\/]/);
+    const pathParts = normalizedFilePath.split('/');
     pathParts.pop();
     const parentPath = pathParts.join('/');
 
     // If the parent is the root or not in our map (e.g. at the top level), add to root
-    if (parentPath === rootPath || !map[parentPath] || parentPath === rootPath.replace(/[\\/]$/, '')) {
+    if (parentPath === normalizedRootPath || !map[parentPath] || parentPath === '') {
       root.push(newNode);
     } else {
       map[parentPath].children.push(newNode);

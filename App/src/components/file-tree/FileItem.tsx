@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/useAppStore';
 import { TreeNode } from '../../utils/treeConverter';
-import { FiChevronRight, FiChevronDown, FiFolder } from "react-icons/fi";
+import { FiChevronRight, FiChevronDown } from "react-icons/fi";
 import { getIconForFile, getIconForFolder } from 'vscode-icons-js';
 
 interface FileItemProps {
@@ -15,8 +15,10 @@ const ICON_BASE_URL = 'https://raw.githubusercontent.com/vscode-icons/vscode-ico
 const FileItem: React.FC<FileItemProps> = ({ node, depth }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const setActiveFile = useAppStore((state) => state.setActiveFile);
+  const addOpenFile = useAppStore((state) => state.addOpenFile);
   const activeFile = useAppStore((state) => state.activeFile);
   const setFileContent = useAppStore((state) => state.setFileContent);
+  const fileContents = useAppStore((state) => state.fileContents);
   
   const isActive = activeFile === node.path;
 
@@ -29,12 +31,17 @@ const FileItem: React.FC<FileItemProps> = ({ node, depth }) => {
     }
 
     try {
+      addOpenFile(node.path);
       setActiveFile(node.path);
-      const content: string = await invoke('read_file', { path: node.path });
-      setFileContent(content);
+      
+      // Only fetch if not already in cache
+      if (!(node.path in fileContents)) {
+        const content: string = await invoke('read_file', { path: node.path });
+        setFileContent(node.path, content);
+      }
     } catch (err) {
       console.error('Failed to read file:', err);
-      setFileContent(`Error loading file: ${err}`);
+      setFileContent(node.path, `Error loading file: ${err}`);
     }
   };
 

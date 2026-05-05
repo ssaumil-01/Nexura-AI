@@ -116,3 +116,5 @@ if __name__ == "__main__":
 # Usage:
 # python main.py --project "proj_calculator" --prompt "Create a calculator app using HTML, CSS and JS"
 # python main.py --project "proj_test" --prompt "Create a hello world python script" --interactive
+# python main.py --project "proj_test" --prompt "Create an interactive streamlit app that generates random data to display line and bar charts, while also allowing basic interaction through sliders, text inputs, and selection boxes. Its purpose isn’t complex functionality, but to showcase how layout techniques (columns, tabs, expanders) and built-in Streamlit components can be used to create a clean, engaging interface that fills the screen effectively."
+# npm run tauri dev
