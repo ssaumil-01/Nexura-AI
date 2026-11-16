@@ -1,0 +1,11 @@
+**
+!dist/**
+!backend/**
+!media/**
+!package.json
+!README.md
+!LICENSE.txt
+!CHANGELOG.md
+**/__pycache__/**
+**/*.pyc
+**/*.map

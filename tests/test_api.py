@@ -286,3 +286,20 @@ def test_api_stays_responsive_while_the_agent_works(api):
         assert api.get("/health").status_code == 200
     assert time.time() - t0 < 0.8                                    # health answered while the LLM call blocked a worker thread
     wait(api, run_id, lambda r: r["state"] == "finished")
+
+
+def test_fake_llm_mode_runs_end_to_end_without_a_model(tmp_path, monkeypatch, git_repo):
+    """NEXURA_FAKE_LLM=1 (used by the extension smoke test): plan + code + verify with scripted models."""
+    import agents.llm as llm_mod
+    import agents.planner as planner_mod
+    monkeypatch.setenv("NEXURA_FAKE_LLM", "1")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "d")
+    monkeypatch.setattr(llm_mod, "_override", None)
+    monkeypatch.setattr(planner_mod.PlannerAgent, "call_llm", planner_mod.PlannerAgent.call_llm)  # restored after the test
+    app = server.create_app(TOKEN, StateManager(tmp_path / "d" / "n.db"), make_checkpointer(tmp_path / "d" / "c.db"))
+    with TestClient(app, base_url="http://127.0.0.1", headers=AUTH) as c:
+        wid = c.post("/workspaces", json={"path": str(git_repo), "trusted": True}).json()["workspace_id"]
+        rid = c.post("/runs", json={"workspace_id": wid, "prompt": "make a file"}).json()["run_id"]
+        approve_plan(c, rid)
+        assert wait(c, rid, lambda r: r["state"] == "finished")["status"] == "completed"
+        assert (git_repo / "hello.txt").read_text().startswith("Hello from Nexura")

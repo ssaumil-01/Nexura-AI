@@ -40,6 +40,11 @@ PROTECTED_PATHS = [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "Cargo.lock", "composer.lock",
     "*.pem", "*.key", "*.p12", "id_rsa*", "credentials*.json", "*.keystore",
 ]
+try:  # extra protected patterns from the editor settings (JSON list in an env var)
+    import json as _json
+    PROTECTED_PATHS += [str(p) for p in _json.loads(os.getenv("NEXURA_EXTRA_PROTECTED", "[]")) if isinstance(p, str)]
+except ValueError:
+    pass
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
 # --- Prompts / environment hints ---------------------------

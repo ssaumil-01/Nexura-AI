@@ -78,6 +78,9 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
     token = token or os.getenv("NEXURA_TOKEN")
     if not token or len(token) < 16:
         raise RuntimeError("NEXURA_TOKEN must be set to a secret of at least 16 characters.")
+    if os.getenv("NEXURA_FAKE_LLM") == "1":   # TEST ONLY: scripted models, no network (extension smoke test)
+        from core import fake_llm
+        fake_llm.install()
     sm = sm or StateManager(nexura_config.DB_PATH)
     manager = RunManager(sm, checkpointer or make_checkpointer(nexura_config.CHECKPOINT_DB_PATH), build_graph)
     workspaces: dict[str, dict] = {}   # workspace_id -> {"path", "trusted"} (registered by the extension)

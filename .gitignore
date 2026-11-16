@@ -20,3 +20,11 @@ App/src-tauri/target/
 memory/runs/
 memory/*.db-wal
 memory/*.db-shm
+
+# extension build outputs
+extension/dist/
+extension/backend/
+extension/out-test/
+extension/.vscode-test/
+.vscode-test/
+ui/dist/

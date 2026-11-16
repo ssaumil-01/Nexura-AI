@@ -1,0 +1,77 @@
+{
+  "name": "nexura-ai",
+  "displayName": "Nexura AI",
+  "description": "A plan-first coding agent: it plans, builds, verifies and can undo - with your approval for risky changes.",
+  "version": "0.1.0",
+  "publisher": "nexura-local",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "private": true,
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Nexura creates and edits files and runs commands, so it only works in a trusted workspace."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "nexura", "title": "Nexura", "icon": "media/icon.svg" }]
+    },
+    "views": {
+      "nexura": [{ "type": "webview", "id": "nexura.sidebar", "name": "Agent" }]
+    },
+    "commands": [
+      { "command": "nexura.startRun", "title": "Start Run", "category": "Nexura" },
+      { "command": "nexura.stopRun", "title": "Stop", "category": "Nexura" },
+      { "command": "nexura.resumeRun", "title": "Resume", "category": "Nexura" },
+      { "command": "nexura.undoLastTask", "title": "Undo Last Task", "category": "Nexura" },
+      { "command": "nexura.undoRun", "title": "Undo Run", "category": "Nexura" },
+      { "command": "nexura.openPlan", "title": "Open Plan", "category": "Nexura" },
+      { "command": "nexura.setGeminiKey", "title": "Set Gemini API Key", "category": "Nexura" },
+      { "command": "nexura.setGroqKey", "title": "Set Groq API Key", "category": "Nexura" },
+      { "command": "nexura.showLogs", "title": "Show Logs", "category": "Nexura" },
+      { "command": "nexura.restartBackend", "title": "Restart Backend", "category": "Nexura" }
+    ],
+    "configuration": {
+      "title": "Nexura",
+      "properties": {
+        "nexura.approvalLevel": {
+          "type": "string",
+          "enum": ["ask_every_edit", "ask_risky", "auto_within_limits"],
+          "default": "ask_risky",
+          "description": "When Nexura asks before changing things. Deletes, renames, dependency/config files, protected paths and installs are always asked about unless 'auto_within_limits'; protected paths and installs are asked about at every level."
+        },
+        "nexura.model.coder": { "type": "string", "default": "gemini-3.1-flash-lite-preview", "description": "Model used by the coder and debugger agents." },
+        "nexura.model.planner": { "type": "string", "default": "gemini-3.1-flash-lite-preview", "description": "Model used by the planner." },
+        "nexura.pythonPath": { "type": "string", "default": "", "description": "Python 3.11+ used to run the Nexura backend. Empty: use the Python extension's interpreter, else a private virtual environment." },
+        "nexura.protectedPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra path patterns (e.g. 'migrations/', '*.sql') that always need your approval to change."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "setup": "npm install && npm --prefix ../ui install",
+    "build": "node scripts/copy-backend.mjs && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p . --noEmit && tsc -p ../ui --noEmit",
+    "package": "npm run build && vsce package --allow-missing-repository --skip-license --no-dependencies",
+    "pretest": "tsc -p tsconfig.test.json",
+    "test": "node out-test/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "mocha": "^10.7.0",
+    "typescript": "^5.5.0"
+  }
+}
