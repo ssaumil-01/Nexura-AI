@@ -32,3 +32,6 @@
 - 2026-11-17: NEXURA_FAKE_LLM=1 installs scripted models (core/fake_llm.py); test-only, used by the extension smoke test, the fake eval smoke and one API test.
 - 2026-11-17: Evals run agent commands inside a throwaway venv (.evalvenv) put first on PATH so real runs never modify the global Python; approvals during evals are auto-approved and counted.
 - 2026-11-17: ruff ignores whitespace-only rules (W291/W292/W293) and tools/github_tool.py (must stay untouched) rather than reformatting unrelated files.
+- 2026-11-17: Eval-driven fixes: command operators are rejected only outside quotes; python3/pip3 allowed; http_status url inferred from the start command; acceptance commands that can never run are validated at plan time and, after 3 bad planner answers, dropped with a visible plan warning (steps left without checks use default verification); planner prompt v5, coder v2.
+- 2026-11-17: Every model client has an explicit timeout (NEXURA_LLM_TIMEOUT_S, default 120 s; the Google client default was none + 6 internal retries). Transient errors (429/5xx/high demand/timeouts) retry with backoff; daily quota exhaustion fails fast as LLM_QUOTA.
+- 2026-11-17: The eval baseline is run 2 (10/14). Later fixes could not be re-measured live because the free-tier daily quota (500 requests/model/day) was exhausted; re-run before using as the V2 reference (docs/V1_EVAL.md).
