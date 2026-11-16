@@ -2,8 +2,7 @@ import os
 import argparse
 from dotenv import load_dotenv
 
-# Activate LangSmith tracing before any LangChain/LangGraph imports
-import config  # noqa: F401  — side-effect: sets tracing env vars
+import config as nexura_config
 
 from langgraph.types import Command
 from core.graph import build_graph
@@ -62,6 +61,7 @@ def main():
     parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop mode")
     
     args = parser.parse_args()
+    nexura_config.configure_observability()
     
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
     os.makedirs(workspace_path, exist_ok=True)

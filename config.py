@@ -1,28 +1,65 @@
-"""
-Nexura AI -- Central Configuration & Observability Setup
-"""
+"""Nexura AI -- central configuration. Importing this module has no network or print side effects."""
 
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- LANGSMITH OBSERVABILITY --------------------------------
 
-def configure_langsmith():
+class ConfigError(RuntimeError):
+    """Raised when required configuration is missing or invalid."""
+
+
+def _int(name: str, default: int) -> int:
+    return int(os.getenv(name, default))
+
+
+# --- Limits ------------------------------------------------
+MAX_RETRIES = 3
+MAX_TOOL_CALLS_PER_TASK = 15
+MAX_REPLANS = 5
+MAX_FILE_BYTES = 1_000_000
+MAX_TOOL_OUTPUT_BYTES = 8000
+CONTEXT_CHAR_BUDGET = 60_000
+COMMAND_TIMEOUT_S = 60
+INSTALL_TIMEOUT_S = 180
+TEMPERATURE = 0.2
+
+# --- Safety ------------------------------------------------
+ALLOWED_COMMANDS = ["python", "py", "pip", "node", "npm", "npx", "uvicorn", "pytest", "streamlit", "flask"]
+ALLOWED_ACTIONS = [
+    "create_file", "write_file", "patch_file", "read_file", "batch_file_operations",
+    "create_directory", "list_directory", "run_command", "install_dependency",
+    "verify_code_syntax", "verify_webapp_endpoint", "web_search", "task_complete",
+]
+PROTECTED_PATHS = [
+    ".git/", ".env*", ".vscode/", ".github/workflows/",
+    "package-lock.json", "yarn.lock", "poetry.lock", "*.pem", "*.key",
+]
+APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
+
+# --- Prompts / environment hints ---------------------------
+PROMPT_VERSIONS = {"planner": "1", "coder": "1", "debugger": "1"}
+SHELL_HINT = os.getenv("NEXURA_SHELL_HINT", "Windows PowerShell" if os.name == "nt" else "POSIX sh")
+
+
+def model_name(role: str) -> str:
+    """Model for 'coder' or 'planner'; raises ConfigError if the env var is unset."""
+    var = f"{role.upper()}_MODEL_NAME"
+    value = os.getenv(var)
+    if not value:
+        raise ConfigError(f"{var} is not set. Copy .env.example to .env and set it.")
+    return value
+
+
+def configure_observability() -> None:
+    """Enable LangSmith tracing if LANGCHAIN_API_KEY is set. Call from entry points only."""
     api_key = os.getenv("LANGCHAIN_API_KEY", "")
-    project = os.getenv("LANGCHAIN_PROJECT", "nexura-ai")
-
     if api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_API_KEY"] = api_key
-        os.environ["LANGCHAIN_PROJECT"] = project
-        os.environ["LANGCHAIN_ENDPOINT"] = os.getenv(
-            "LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com"
-        )
-        print(f"[Config] LangSmith tracing ENABLED  -> project: {project}")
+        os.environ.setdefault("LANGCHAIN_PROJECT", "nexura-ai")
+        os.environ.setdefault("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+        print(f"[Config] LangSmith tracing ENABLED -> project: {os.environ['LANGCHAIN_PROJECT']}")
     else:
         os.environ["LANGCHAIN_TRACING_V2"] = "false"
         print("[Config] LangSmith tracing DISABLED (no LANGCHAIN_API_KEY found)")
-
-configure_langsmith()

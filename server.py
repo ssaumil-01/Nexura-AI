@@ -18,6 +18,8 @@ import tools.directory_tools as dt
 from langgraph.checkpoint.memory import InMemorySaver
 
 load_dotenv()
+import config as nexura_config
+nexura_config.configure_observability()
 
 app = FastAPI(title="Nexura-AI Server")
 
