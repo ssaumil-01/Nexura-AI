@@ -1,105 +1,92 @@
+"""Builds the workspace context for the Coder: budgeted, prioritized, ignore-aware. (No retrieval/embeddings: that is V2.)
+
+Priority: 1) files named in the task  2) files changed this run  3) everything else as path + first lines.
+"""
 import os
+from pathlib import Path
 
-# Directories to skip entirely
-IGNORED_DIRS = {
-    "node_modules", "__pycache__", ".git", ".next", "dist", "build",
-    ".vite", ".cache", "venv", ".env", "coverage", ".turbo"
-}
+import config
+from core.safety import is_ignored, load_ignore_patterns
 
-# Files to skip
-IGNORED_FILES = {
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    ".DS_Store", "Thumbs.db", "plan.json", "plan.md"
-}
-
-# Extensions to skip (binary / non-useful)
-IGNORED_EXTENSIONS = {
-    ".pyc", ".pyo", ".exe", ".dll", ".so", ".o", ".a",
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
-    ".woff", ".woff2", ".ttf", ".eot", ".map"
-}
-
-# Max file size to read (prevent token blowup on large files)
-MAX_FILE_SIZE = 10_000  # 10 KB
+MAX_FILES_SCANNED = 2000
+FULL_FILE_CAP = 12_000   # chars of one file shown in full
+HEAD_LINES = 30          # lines shown for lower-priority files
+TREE_SHARE = 0.2         # at most this share of the budget goes to the tree
 
 
-class ContextBuilder:
-    def __init__(self, workspace_path: str):
-        self.workspace_path = workspace_path
-        
-    def build_context(self) -> str:
-        """Reads relevant source files and generates a directory tree to build the workspace context."""
-        if not os.path.exists(self.workspace_path):
-            return "Workspace is currently empty."
-            
-        # 1. Generate Directory Tree
-        tree_str = "========================\nDIRECTORY STRUCTURE\n========================\n"
-        tree_str += self._generate_directory_tree(self.workspace_path)
-        tree_str += "\n\n========================\nFILE CONTENTS\n========================\n"
-        
-        # 2. Gather File Contents
-        content_str = ""
-        has_files = False
-        
-        for root, dirs, files in os.walk(self.workspace_path):
-            # Skip hidden + ignored directories
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in IGNORED_DIRS]
-            
-            for file in files:
-                # Skip ignored files
-                if file in IGNORED_FILES:
-                    continue
-                    
-                # Skip ignored extensions
-                _, ext = os.path.splitext(file)
-                if ext.lower() in IGNORED_EXTENSIONS:
-                    continue
-                
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, self.workspace_path)
-                
-                # Skip files that are too large
-                try:
-                    file_size = os.path.getsize(file_path)
-                    if file_size > MAX_FILE_SIZE:
-                        content_str += f"\n--- {rel_path} ---\n[File too large: {file_size} bytes, skipped]\n"
-                        continue
-                except OSError:
-                    continue
-                
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        content_str += f"\n--- {rel_path} ---\n```\n{content}\n```\n"
-                        has_files = True
-                except UnicodeDecodeError:
-                    content_str += f"\n--- {rel_path} ---\n[Binary or Unreadable File]\n"
-                except Exception:
-                    pass
-        
-        if not has_files and tree_str.count("\n") < 5:
-            return "Workspace is currently empty."
-            
-        return (tree_str + content_str).strip()
+def _list_files(root: Path, patterns: list[str]) -> list[str]:
+    out: list[str] = []
+    for dirpath, dirs, files in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
+        dirs[:] = sorted(d for d in dirs if not is_ignored(d if rel_dir == "." else f"{rel_dir}/{d}", patterns))
+        for f in sorted(files):
+            rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+            if not is_ignored(rel, patterns):
+                out.append(rel)
+        if len(out) >= MAX_FILES_SCANNED:
+            break
+    return out
 
-    def _generate_directory_tree(self, path: str, prefix: str = "") -> str:
-        """Generates a text-based tree representation of the directory."""
-        tree = []
-        if not os.path.exists(path):
-            return ""
-            
-        items = sorted(os.listdir(path))
-        items = [i for i in items if not i.startswith('.') and i not in IGNORED_DIRS and i not in IGNORED_FILES]
-        
-        for i, item in enumerate(items):
-            is_last = (i == len(items) - 1)
-            connector = "└── " if is_last else "├── "
-            
-            full_path = os.path.join(path, item)
-            tree.append(f"{prefix}{connector}{item}")
-            
-            if os.path.isdir(full_path):
-                new_prefix = prefix + ("    " if is_last else "│   ")
-                tree.append(self._generate_directory_tree(full_path, new_prefix))
-                
-        return "\n".join(filter(None, tree))
+
+def _read(root: Path, rel: str) -> str | None:
+    try:
+        return (root / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def build_context(task: dict, root: Path | str, changed_files: list[str] | None = None,
+                  budget: int | None = None, redact=None) -> tuple[str, dict]:
+    """Returns (context_text, breakdown). `redact(text) -> text` is applied to every file body (secret scrubbing)."""
+    root = Path(root)
+    budget = budget or config.CONTEXT_CHAR_BUDGET
+    redact = redact or (lambda t: t)
+    if not root.exists():
+        return "Workspace is currently empty.", {"files": 0}
+    files = _list_files(root, load_ignore_patterns(root))
+    if not files:
+        return "Workspace is currently empty.", {"files": 0}
+
+    changed = [f for f in dict.fromkeys(changed_files or []) if f in files]
+    text = f"{task.get('title', '')}\n{task.get('description', '')}".lower()
+    named = [f for f in files if f.lower() in text or (len(os.path.basename(f)) > 3 and os.path.basename(f).lower() in text)]
+
+    tree_cap = int(budget * TREE_SHARE)
+    tree = "\n".join(files)
+    tree_note = ""
+    if len(tree) > tree_cap:
+        tree, tree_note = tree[:tree_cap], f"\n...[tree truncated: {len(files)} files total]"
+    parts = ["========================\nFILES\n========================\n" + tree + tree_note]
+    used = len(parts[0])
+    shown = {"named": [], "changed": [], "head": []}
+    omitted = 0
+
+    def add(rel: str, group: str, full: bool) -> None:
+        nonlocal used, omitted
+        body = _read(root, rel)
+        if body is None:
+            return
+        body = redact(body)
+        if full:
+            body = body if len(body) <= FULL_FILE_CAP else body[:FULL_FILE_CAP] + "\n...[file truncated]"
+        else:
+            lines = body.splitlines()
+            body = "\n".join(lines[:HEAD_LINES]) + (f"\n...[{len(lines) - HEAD_LINES} more lines]" if len(lines) > HEAD_LINES else "")
+        block = f"\n--- {rel} ---\n```\n{body}\n```"
+        if used + len(block) > budget:
+            omitted += 1
+            return
+        parts.append(block)
+        used += len(block)
+        shown[group].append(rel)
+
+    seen = set()
+    for group, names, full in (("named", named, True), ("changed", changed, True), ("head", files, False)):
+        for rel in names:
+            if rel not in seen:
+                seen.add(rel)
+                add(rel, group, full)
+
+    breakdown = {"files": len(files), "chars": used, "budget": budget, "omitted_for_budget": omitted,
+                 **{k: len(v) for k, v in shown.items()}}
+    return "\n".join(parts), breakdown

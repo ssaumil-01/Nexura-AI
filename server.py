@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from dotenv import load_dotenv
 
 from langgraph.types import Command
-from core.graph import build_graph
+from core.orchestrator import build_graph
 from core.schemas import ProjectContext
 from core.task_manager import run_summary
 

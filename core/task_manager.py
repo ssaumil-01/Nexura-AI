@@ -59,3 +59,11 @@ def run_summary(values: dict) -> dict:
                 for k, v in status.items() if v == s]
     return {"run_status": values.get("run_status") or "incomplete", "run_error": values.get("run_error"),
             "done": pick("done"), "failed": pick("failed"), "skipped": pick("skipped")}
+
+
+def load_tasks(plan: dict) -> list:
+    """plan.json dict -> TaskRecords (ordered). Persistence goes through state_manager (Phase 4)."""
+    from core.schemas import TaskRecord
+    return [TaskRecord(task_id=s["step_id"], title=s["title"], description=s.get("description", ""),
+                       dependencies=s.get("dependencies", []), acceptance=s.get("acceptance", []))
+            for s in plan.get("steps", [])]

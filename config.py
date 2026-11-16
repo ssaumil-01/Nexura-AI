@@ -65,3 +65,5 @@ def configure_observability() -> None:
     else:
         os.environ["LANGCHAIN_TRACING_V2"] = "false"
         print("[Config] LangSmith tracing DISABLED (no LANGCHAIN_API_KEY found)")
+
+MAX_BATCH_OPS = 10

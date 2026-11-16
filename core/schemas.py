@@ -88,3 +88,92 @@ class ExecutionPlan(BaseModel):
     project_id: str = Field(description="A unique ID for the project")
     goal: str = Field(description="The main goal of the execution plan")
     steps: list[Step] = Field(description="List of execution steps")
+
+
+# ─── ACTIONS / RESULTS ──────────────────────────────────────
+
+import time as _time  # noqa: E402
+
+
+class Action(BaseModel):
+    """A proposed operation. Agents only ever produce these; the orchestrator validates and executes them."""
+    action: str
+    path: Optional[str] = None
+    content: Optional[str] = None
+    command: Optional[str] = None
+    search_text: Optional[str] = None
+    replace_text: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class FileChange(BaseModel):
+    file: str
+    change_type: Literal["created", "modified", "deleted"]
+    task_id: int
+    timestamp: float = Field(default_factory=_time.time)
+    sha256_before: Optional[str] = None
+    sha256_after: Optional[str] = None
+
+
+class ExecResult(BaseModel):
+    ok: bool = True
+    code: Optional[str] = None  # error code when not ok
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: Optional[int] = None
+    duration_ms: int = 0
+    truncated: bool = False
+    file_changes: list[FileChange] = Field(default_factory=list)
+
+    def text(self) -> str:
+        """The result as the agent should see it."""
+        if self.ok:
+            return self.stdout
+        if self.code == "COMMAND_FAILED":
+            return f"Command failed (exit code {self.exit_code}):\n{self.stdout}"
+        return f"ERROR: {self.code}: {self.stderr or self.stdout}"
+
+
+class ValidationResult(BaseModel):
+    ok: bool = True
+    code: Optional[str] = None
+    message: str = ""
+
+
+class CheckResult(BaseModel):
+    type: str
+    ok: bool
+    detail: str = ""
+
+
+class VerificationResult(BaseModel):
+    ok: bool
+    checks: list[CheckResult] = Field(default_factory=list)
+
+    def failure_text(self) -> str:
+        return "\n".join(f"- {c.type}: {c.detail}" for c in self.checks if not c.ok)
+
+
+class TaskRecord(BaseModel):
+    task_id: int
+    title: str
+    description: str = ""
+    dependencies: list[int] = Field(default_factory=list)
+    acceptance: list[Acceptance] = Field(default_factory=list)
+    status: Literal["pending", "running", "done", "failed", "skipped"] = "pending"
+    attempts: int = 0
+    reason: Optional[str] = None
+
+
+class LogRecord(BaseModel):
+    timestamp: float = Field(default_factory=_time.time)
+    project_id: Optional[str] = None
+    run_id: Optional[str] = None
+    task_id: Optional[int] = None
+    agent: str
+    prompt_version: Optional[str] = None
+    model: Optional[str] = None
+    input_summary: str = ""
+    output_summary: str = ""
+    result: str = ""
+    tokens: Optional[int] = None

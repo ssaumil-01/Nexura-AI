@@ -29,13 +29,16 @@ def initial_state(workspace, interactive=False):
 def g(monkeypatch, fake_llm, workspace):
     monkeypatch.setenv("CODER_MODEL_NAME", "gemini-test")
     monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
-    import core.graph as cg
-    monkeypatch.setattr(cg, "llm_with_tools", fake_llm)
+    import core.orchestrator as cg
+    import agents.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "_override", fake_llm)
+    holder = {"plan": PLAN}
     monkeypatch.setattr(cg, "planner_node", lambda s: {
-        "plan": PLAN, "tasks": PLAN["steps"], "current_task_index": 0, "plan_feedback": None,
-        "task_status": {"1": "pending", "2": "pending"}, "task_errors": {}, "run_status": "running"})
+        "plan": holder["plan"], "tasks": holder["plan"]["steps"], "current_task_index": 0, "plan_feedback": None,
+        "task_status": {str(t["step_id"]): "pending" for t in holder["plan"]["steps"]}, "task_errors": {}, "run_status": "running"})
     sleeps = []
-    monkeypatch.setattr(cg.time, "sleep", lambda s: sleeps.append(s))
+    import time
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
 
     def cfg(thread="t"):
         return {"configurable": {"thread_id": thread, "project": ProjectContext(run_id=thread, root=workspace)},
@@ -49,6 +52,7 @@ def g(monkeypatch, fake_llm, workspace):
         return graph, c
 
     run.sleeps = sleeps
+    run.holder = holder
     run.cfg = cfg
     run.cg = cg
     return run
@@ -116,9 +120,9 @@ def test_bug3_llm_exhaustion_fails_task_and_skips_rest(g, fake_llm):
 
 
 def test_backoff_honors_retry_delay_and_grows():
-    import core.graph as cg
-    assert 12 <= cg._backoff_delay(0, "... retryDelay': '10s' ...") <= 15
-    assert cg._backoff_delay(2, "429") > cg._backoff_delay(0, "429") - 5  # exponential base (jitter aside)
+    from agents.llm import backoff_delay
+    assert 12 <= backoff_delay(0, "... retryDelay': '10s' ...") <= 15
+    assert backoff_delay(2, "429") > backoff_delay(0, "429") - 5  # exponential base (jitter aside)
 
 
 def test_other_llm_error_fails_task_with_reason(g, fake_llm):
@@ -168,7 +172,7 @@ def test_bug6_history_logs_every_call(g, fake_llm, workspace):
                           tool_call_msg("list_directory", {"target_dir": "."}, "b")] + done(2)
     h = values(g())["execution_history"]
     tools = [(e["step_id"], e["tool"], e["status"]) for e in h]
-    assert tools[:3] == [(1, "create_file", "error"), (1, "list_directory", "ok"), (1, "task_complete", "ok")]
+    assert tools[:3] == [(1, "create_file", "rejected"), (1, "list_directory", "ok"), (1, "task_complete", "ok")]
     assert "args" in h[0] and "result" in h[0]
 
 
@@ -214,10 +218,9 @@ def test_replan_cap_stops_run(g, fake_llm):
     assert not graph.get_state(c).next
 
 
-# ─── bug 12 (fixed in Phase 3 when the coder moves out of graph.py) ──
+# ─── bug 12 ─────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="bug 12: core.graph crashes at import without CODER_MODEL_NAME")
 def test_bug12_import_without_model_env():
-    env = {k: v for k, v in __import__("os").environ.items() if k != "CODER_MODEL_NAME"}
-    r = subprocess.run([sys.executable, "-c", "import core.graph"], cwd=ROOT, env=env, capture_output=True)
+    env = {k: v for k, v in __import__("os").environ.items() if k not in ("CODER_MODEL_NAME", "PLANNER_MODEL_NAME")}
+    r = subprocess.run([sys.executable, "-c", "import core.graph, core.orchestrator, agents.coder"], cwd=ROOT, env=env, capture_output=True)
     assert r.returncode == 0, r.stderr.decode()[-300:]

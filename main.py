@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import config as nexura_config
 
 from langgraph.types import Command
-from core.graph import build_graph
+from core.orchestrator import build_graph
 from core.schemas import ProjectContext
 from core.task_manager import run_summary
 

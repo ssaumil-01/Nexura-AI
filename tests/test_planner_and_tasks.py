@@ -144,9 +144,8 @@ def test_planner_prompt_version_and_granularity():
 
 def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):
     import agents.planner as ap
-    import core.graph  # noqa: F401  (needs env)
     monkeypatch.setattr(ap.PlannerAgent, "plan", lambda *a, **k: (_ for _ in ()).throw(ap.PlanError("boom")))
-    from core.graph import planner_node, route_after_planner
+    from core.orchestrator import planner_node, route_after_planner
     from langgraph.graph import END
     out = planner_node({"user_prompt": "x", "workspace_path": planner.path})
     assert out["run_status"] == "failed" and "boom" in out["run_error"]
@@ -185,3 +184,10 @@ def test_server_stream_does_not_block_event_loop(monkeypatch, tmp_path):
     ticks, events = asyncio.run(main())
     assert ticks > 10  # the loop kept running during the 0.6s blocking step
     assert events[-1]["event"] == "complete" and json.loads(events[-1]["data"])["run_status"] == "completed"
+
+
+def test_load_tasks_from_plan_dict():
+    from core.task_manager import load_tasks
+    tasks = load_tasks(plan(step(1), step(2, [1])).model_dump())
+    assert [t.task_id for t in tasks] == [1, 2] and tasks[1].dependencies == [1] and tasks[0].status == "pending"
+    assert tasks[0].acceptance[0].type == "file_exists"

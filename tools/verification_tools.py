@@ -65,6 +65,10 @@ def verify_code_syntax(file_path: str, config: RunnableConfig) -> str:
 def verify_webapp_endpoint(url: str) -> str:
     """Pings a live web dashboard or API endpoint (e.g. http://localhost:8501) to verify it is running and accessible.
     Returns the status code and a snippet of the response text."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        return f"ERROR: NOT_LOCAL: Only localhost URLs can be checked, got: {url}"
     try:
         response = requests.get(url, timeout=5)
         snippet = response.text[:200].replace('\n', ' ')

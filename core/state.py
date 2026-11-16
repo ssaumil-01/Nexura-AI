@@ -53,3 +53,16 @@ class NexuraState(TypedDict):
 
     # How many times the user asked for a re-plan
     replan_count: int
+
+    # Orchestrator working state for the current task
+    mode: Optional[str]              # "code" | "debug"
+    attempts: int                    # validator rejections + verification failures this task
+    pending: list[dict]              # validated actions waiting to execute
+    changed_files: list[str]         # files changed in this task
+    command_results: list[dict]      # {command, exit_code} for run_command in this task
+    file_changes: list[dict]         # FileChange dicts for the whole run
+    verify_failure: Optional[str]
+    retry_hint: Optional[str]
+    error_type: Optional[str]
+    want_verify: bool
+    last_rejection: Optional[str]

@@ -189,3 +189,34 @@ def _check_install_args(name: str, args: list[str], root) -> None:
                 val = a[2:]
             if val is not None and val != ".":
                 resolve_in_root(root, val)
+
+
+# ─── IGNORE RULES (.gitignore / .nexuraignore) ──────────────
+
+NEVER_IN_CONTEXT = [".env*", "*.pem", "*.key", "*.p12", "id_rsa*", ".git/"]
+DEFAULT_IGNORED = ["plan.json", "plan.md", "node_modules/", "__pycache__/", ".git/", ".venv/", "venv/", "dist/", "build/", ".next/", ".cache/",
+                   "coverage/", ".nexura/", "*.pyc", "*.pyo", "*.exe", "*.dll", "*.so", "*.png", "*.jpg", "*.jpeg",
+                   "*.gif", "*.ico", "*.webp", "*.woff", "*.woff2", "*.ttf", "*.pdf", "*.db", "*.sqlite"]
+
+
+def load_ignore_patterns(root: Path | str) -> list[str]:
+    """Defaults + .gitignore + .nexuraignore. shortcut: no negation (!) or anchored-path semantics; upgrade if users need them."""
+    pats = list(DEFAULT_IGNORED)
+    for name in (".gitignore", ".nexuraignore"):
+        try:
+            for line in (Path(root) / name).read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and not line.startswith("!"):
+                    pats.append(line.lstrip("/"))
+        except OSError:
+            pass
+    return pats
+
+
+def is_ignored(rel: str, patterns: list[str]) -> bool:
+    return _matches(rel, patterns) or _matches(rel, NEVER_IN_CONTEXT)
+
+
+def rel_path(root: Path | str, full: Path | str) -> str:
+    """Workspace-relative path with forward slashes, original case (for display/records)."""
+    return os.path.relpath(str(full), os.path.realpath(str(root))).replace("\\", "/")
