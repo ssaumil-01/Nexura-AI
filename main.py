@@ -1,4 +1,6 @@
 import os
+import sys
+import json
 import argparse
 from dotenv import load_dotenv
 
@@ -7,6 +9,7 @@ import config as nexura_config
 from langgraph.types import Command
 from core.graph import build_graph
 from core.schemas import ProjectContext
+from core.task_manager import run_summary
 
 load_dotenv()
 
@@ -30,7 +33,13 @@ def run_graph(graph, initial_state, config):
         # There's a pending interrupt — check what it is
         if snapshot.tasks and snapshot.tasks[0].interrupts:
             interrupt_value = snapshot.tasks[0].interrupts[0].value
-            print(f"\n>> {interrupt_value}")
+            if isinstance(interrupt_value, dict):  # tool approval request
+                print(f"\n>> Task {interrupt_value.get('task_id')} wants to run:")
+                for c in interrupt_value.get("calls", []):
+                    print(f"   - {c['name']}({json.dumps(c['args'], default=str)[:300]})")
+                print(">> Type 'yes' to approve; anything else rejects it and is sent to the agent as feedback:")
+            else:
+                print(f"\n>> {interrupt_value}")
             user_input = input(">> ").strip()
             
             # Resume the graph with the user's input
@@ -40,6 +49,21 @@ def run_graph(graph, initial_state, config):
                 _print_event(event)
         else:
             break
+
+    return graph.get_state(config).values
+
+
+def print_summary(values: dict) -> int:
+    """Prints the honest run outcome. Returns the process exit code (0 only if every task is done)."""
+    s = run_summary(values)
+    print(f"\n=== Run {s['run_status'].upper()} ===")
+    if s["run_error"]:
+        print(f"Error: {s['run_error']}")
+    for label in ("done", "failed", "skipped"):
+        for t in s[label]:
+            reason = f" ({t['reason']})" if t["reason"] else ""
+            print(f"  [{label}] {t['step_id']}. {t['title']}{reason}")
+    return 0 if s["run_status"] == "completed" else 1
 
 
 def _print_event(event):
@@ -93,18 +117,26 @@ def main():
         "is_interactive": args.interactive,
         "plan_feedback": None,
         "tool_calls_count": 0,
+        "task_status": {},
+        "task_errors": {},
+        "run_status": None,
+        "run_error": None,
+        "task_outcome": None,
+        "task_reason": None,
+        "replan_count": 0,
     }
-    
+
     print(f"Nexura AI -- Starting project: {args.project}")
     print(f"Mode: {'Interactive (HITL)' if args.interactive else 'Autonomous'}\n")
     
     try:
-        run_graph(graph, initial_state, config)
+        values = run_graph(graph, initial_state, config)
     finally:
         project.processes.stop_all()
-    
-    print("\n[OK] Pipeline complete!")
+
+    exit_code = print_summary(values)
     print(f"\n---> LangSmith Traces: https://smith.langchain.com/o/default/projects/p/{args.project}")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

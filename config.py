@@ -18,6 +18,7 @@ def _int(name: str, default: int) -> int:
 MAX_RETRIES = 3
 MAX_TOOL_CALLS_PER_TASK = 15
 MAX_REPLANS = 5
+FAILURE_POLICY = os.getenv("NEXURA_FAILURE_POLICY", "stop")  # stop | continue
 MAX_FILE_BYTES = 1_000_000
 MAX_TOOL_OUTPUT_BYTES = 8000
 CONTEXT_CHAR_BUDGET = 60_000
@@ -40,7 +41,7 @@ PROTECTED_PATHS = [
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
 # --- Prompts / environment hints ---------------------------
-PROMPT_VERSIONS = {"planner": "1", "coder": "1", "debugger": "1"}
+PROMPT_VERSIONS = {"planner": "2", "coder": "1", "debugger": "1"}
 SHELL_HINT = os.getenv("NEXURA_SHELL_HINT", "Windows PowerShell" if os.name == "nt" else "POSIX sh")
 
 

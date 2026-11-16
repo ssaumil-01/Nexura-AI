@@ -34,3 +34,22 @@ class NexuraState(TypedDict):
     
     # Counter for tool calls in the current task (prevents infinite loops)
     tool_calls_count: int
+
+    # Per-task status keyed by str(step_id): pending | running | done | failed | skipped
+    task_status: dict[str, str]
+
+    # Failure reason per failed task, keyed by str(step_id)
+    task_errors: dict[str, str]
+
+    # running | completed | completed_with_failures | failed | cancelled
+    run_status: Optional[str]
+
+    # Why the run could not even start/continue (e.g. planner failure, replan cap)
+    run_error: Optional[str]
+
+    # Transient: outcome of the current task ("done" | "failed") once decided, plus the reason
+    task_outcome: Optional[str]
+    task_reason: Optional[str]
+
+    # How many times the user asked for a re-plan
+    replan_count: int
