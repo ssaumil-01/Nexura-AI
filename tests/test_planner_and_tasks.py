@@ -136,7 +136,7 @@ def test_planner_api_failure_is_not_retried(planner):
 def test_planner_prompt_version_and_granularity():
     import config
     from agents.planner import PROMPT_TEMPLATE
-    assert config.PROMPT_VERSIONS["planner"] == "2" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
+    assert config.PROMPT_VERSIONS["planner"] == "3" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
 
 
 def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):
@@ -156,3 +156,20 @@ def test_load_tasks_from_plan_dict():
     tasks = load_tasks(plan(step(1), step(2, [1])).model_dump())
     assert [t.task_id for t in tasks] == [1, 2] and tasks[1].dependencies == [1] and tasks[0].status == "pending"
     assert tasks[0].acceptance[0].type == "file_exists"
+
+
+@pytest.mark.parametrize("start,url", [
+    ("python -m uvicorn app:app --port 8765", "http://127.0.0.1:8765/"), ("streamlit run app.py", "http://127.0.0.1:8501/"),
+    ("python -m flask --app app run --port 8767", "http://127.0.0.1:8767/"), ("python manage.py runserver 0.0.0.0:9000", "http://127.0.0.1:9000/"),
+    ("python -m http.server", "http://127.0.0.1:8000/")])
+def test_http_status_url_is_inferred_from_the_start_command(start, url):
+    """The live model often omits `url` and only gives the start command; that must not sink the whole plan."""
+    from core.schemas import Acceptance
+    assert Acceptance(type="http_status", start_command=start).url == url
+    assert Acceptance(type="http_status", start_command=start, url="http://localhost:1/x").url == "http://localhost:1/x"
+
+
+def test_http_status_without_any_way_to_find_a_url_is_still_invalid():
+    from core.schemas import Acceptance
+    with pytest.raises(ValueError, match="requires url"):
+        Acceptance(type="http_status", start_command="python app.py")

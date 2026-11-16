@@ -56,3 +56,26 @@ def test_requirements_outside_root_rejected(workspace):
     assert code("pip install -r ../other/requirements.txt", workspace, allow_install=True) == "OUTSIDE_ROOT"
     (workspace / "requirements.txt").write_text("x\n")
     assert parse_command("pip install -r requirements.txt", workspace, allow_install=True).installs
+
+
+@pytest.mark.parametrize("cmd", ['python -c "import os; print(1)"', "python -c 'a = 1; print(a > 0)'", 'python -c "print(1 | 2)"'])
+def test_quoted_operators_are_data_not_operators(workspace, cmd):
+    """With shell=False a quoted ; | > is just text (python -c "a; b"), so it must not be rejected."""
+    assert parse_command(cmd, workspace).name == "python"
+
+
+@pytest.mark.parametrize("cmd", ['python -c "print(1)" ; rm x', 'python -c "a" | more', "python -c 'a' && python b.py", 'python "a.py" > out',
+                                 'python -c "unterminated; x'])
+def test_operators_outside_quotes_still_rejected(workspace, cmd):
+    assert code(cmd, workspace) in ("SHELL_OPERATOR", "BAD_COMMAND")
+
+
+def test_newlines_are_never_allowed_even_inside_quotes(workspace):
+    assert code('python -c "print(1)\nprint(2)"', workspace) == "SHELL_OPERATOR"
+
+
+def test_python3_and_pip3_aliases(workspace):
+    import shutil
+    assert code("pip3 install requests", workspace) == "USE_INSTALL_DEPENDENCY"
+    if shutil.which("python3"):
+        assert parse_command("python3 a.py", workspace).name == "python"

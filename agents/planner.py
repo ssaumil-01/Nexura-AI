@@ -66,7 +66,9 @@ Each step must represent EXACTLY ONE action.
    - {{"type": "command_ok", "command": "python -m pytest -q", "timeout_s": 60}}
    - {{"type": "output_contains", "command": "python main.py 2+2", "text": "4"}}
    - {{"type": "http_status", "start_command": "python app.py", "url": "http://127.0.0.1:5000/health", "expect": 200, "wait_s": 10}}
-   Commands are ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <).
+   For http_status the "url" field is REQUIRED (the full http://127.0.0.1:PORT/path to request; use the port from start_command).
+   Commands are ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <)
+   outside quotes. Run tests with `python -m pytest -q` (not bare `pytest`), so the project root is importable.
    Only a step that purely writes documentation may use "acceptance": [] together with "documentation_only": true.
 
 4. DO NOT SPECIFY TOOLS OR FILE PATHS IN THE PLAN
@@ -183,7 +185,8 @@ YOUR PREVIOUS ANSWER WAS INVALID
 ========================
 {last_error}
 
-Return corrected JSON only.
+Reminder of the required fields per acceptance type: file_exists(path), syntax_ok(paths), command_ok(command),
+output_contains(command, text), http_status(url, and usually start_command). Return corrected JSON only.
 """
             try:
                 raw = self.call_llm(attempt_prompt)

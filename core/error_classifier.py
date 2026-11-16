@@ -9,7 +9,8 @@ RULES = [
     ("test_failure", r"AssertionError|FAILED|\d+ failed|Tests? failed|assert "),
 ]
 HINTS = {
-    "missing_dependency": "A module/program is missing: add it with install_dependency (and to requirements.txt/package.json).",
+    "missing_dependency": "A module/program is missing: add it with install_dependency (and to requirements.txt/package.json). "
+                          "If it is a LOCAL package, run tests with `python -m pytest` (it puts the project root on sys.path; bare `pytest` does not).",
     "import_error": "An import failed: check the module/file names and the import path.",
     "syntax_error": "There is a syntax error: re-read the file and fix the exact line reported.",
     "port_in_use": "The port is busy: use a different port or stop the process using it.",

@@ -134,8 +134,9 @@ def parse_command(command: str, root: Path | str, allow_install: bool = False) -
     """Validate a command against the allowlist. The caller must run it with shell=False."""
     if not command or not command.strip():
         raise SafetyError("EMPTY_COMMAND", "Empty command.")
-    if any(c in FORBIDDEN_CHARS for c in command) or "$(" in command:
-        raise SafetyError("SHELL_OPERATOR", "Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time.")
+    outside = _outside_quotes(command)
+    if "\n" in command or "\r" in command or any(c in FORBIDDEN_CHARS for c in outside) or "$(" in outside:
+        raise SafetyError("SHELL_OPERATOR", "Shell operators (| & ; > < ` $( newline) are not allowed outside quotes. Run one command at a time.")
     try:
         toks = _split(command)
     except ValueError as e:
@@ -151,6 +152,7 @@ def parse_command(command: str, root: Path | str, allow_install: bool = False) -
             name = name[: -len(ext)]
     if name not in config.ALLOWED_COMMANDS:
         raise SafetyError("NOT_ALLOWED", f"'{exe}' is not an allowed command. Allowed: {', '.join(config.ALLOWED_COMMANDS)}")
+    name = {"python3": "python", "pip3": "pip"}.get(name, name)
 
     installs = _is_install(name, args)
     if installs and not allow_install:
@@ -163,9 +165,34 @@ def parse_command(command: str, root: Path | str, allow_install: bool = False) -
     path = shutil.which(exe)
     if not path:
         raise SafetyError("NOT_FOUND", f"Executable '{exe}' was not found on PATH.")
-    if path.lower().endswith((".cmd", ".bat")) and any(c in a for a in args for c in "^%!\""):
-        raise SafetyError("SHELL_OPERATOR", "Characters ^ % ! \" are not allowed in arguments for this command.")
+    # .cmd/.bat launchers go through cmd.exe, where even quoted metacharacters are dangerous
+    if path.lower().endswith((".cmd", ".bat")) and any(c in a for a in args for c in "^%!\"" + "".join(FORBIDDEN_CHARS)):
+        raise SafetyError("SHELL_OPERATOR", "Special characters (^ % ! \" | & ; < > `) are not allowed in arguments for this command.")
     return ParsedCommand([path, *args], name, installs, args)
+
+
+def _outside_quotes(command: str) -> str:
+    """The command with quoted segments blanked out. Under shell=False a quoted `;` or `|` is just data (e.g. python -c "a; b"),
+    so only operators OUTSIDE quotes are rejected. Backslash escapes are honoured on POSIX only (on Windows they are path separators)."""
+    out, quote, i = [], None, 0
+    while i < len(command):
+        c = command[i]
+        if quote:
+            if c == "\\" and os.name != "nt" and quote == '"' and i + 1 < len(command):
+                i += 1
+            elif c == quote:
+                quote = None
+            out.append("x")
+        elif c in QUOTES:
+            quote = c
+            out.append("x")
+        elif c == "\\" and os.name != "nt" and i + 1 < len(command):
+            out.append("x")
+            i += 1
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _check_install_args(name: str, args: list[str], root) -> None:

@@ -1,0 +1,520 @@
+{
+  "date": "2026-11-17T00:56:54",
+  "commit": "37b4df0",
+  "fake_llm": false,
+  "coder_model": "gemini-3.1-flash-lite-preview",
+  "planner_model": "gemini-3.1-flash-lite",
+  "approval_level": "auto_within_limits",
+  "prompt_versions": {
+    "planner": "2",
+    "coder": "1",
+    "debugger": "1"
+  },
+  "summary": {
+    "tasks": 14,
+    "passed": 6,
+    "pass_rate": 0.429,
+    "retries": 29,
+    "tool_calls": 140,
+    "approvals": 1,
+    "time_s": 1342.5,
+    "tokens": 406289
+  },
+  "results": [
+    {
+      "id": "calc_cli",
+      "title": "Python CLI calculator",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 4,
+      "tasks_done": 4,
+      "retries": 1,
+      "error_types": {
+        "rejected:READ_REQUIRED": 1
+      },
+      "tool_calls": 26,
+      "llm_calls": 27,
+      "approvals": 0,
+      "tokens": 91129,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "calc.py: exists"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python calc.py 2+3*4` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python calc.py (1+2)*3` output contains text"
+        }
+      ],
+      "time_s": 211.8
+    },
+    {
+      "id": "fastapi_users",
+      "title": "FastAPI health and users endpoints",
+      "passed": false,
+      "run_status": "failed",
+      "tasks_total": 0,
+      "tasks_done": 0,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 0,
+      "llm_calls": 0,
+      "approvals": 0,
+      "tokens": null,
+      "task_errors": {},
+      "run_error": "Planner failed: Planner produced no valid plan after 3 attempts: 1 validation error for ExecutionPlan\nsteps.3.acceptance.0\n  Value error, acceptance 'http_status' requires url [type=value_error, input_value={'type': 'http_status', '..._s': 5, 'timeout_s': 10}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.14/v/value_error",
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "app.py: missing"
+        },
+        {
+          "type": "http_status",
+          "ok": false,
+          "detail": "http://127.0.0.1:8765/health expected 200, got Endpoint check failed. The server might not be running or the URL is incorrect. Error: HTTPConnectionPool(host='127.0.0.1', port=8765): Max retries exceeded with url: /health (Caused by NewConnectionE. Server output: [process d59667d7: exited with code "
+        },
+        {
+          "type": "http_status",
+          "ok": false,
+          "detail": "http://127.0.0.1:8766/users expected 200, got Endpoint check failed. The server might not be running or the URL is incorrect. Error: HTTPConnectionPool(host='127.0.0.1', port=8766): Max retries exceeded with url: /users (Caused by NewConnectionEr. Server output: [process 4182a63d: exited with code 1"
+        }
+      ],
+      "time_s": 62.3
+    },
+    {
+      "id": "flask_hello",
+      "title": "Flask hello app",
+      "passed": false,
+      "run_status": "failed",
+      "tasks_total": 0,
+      "tasks_done": 0,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 0,
+      "llm_calls": 0,
+      "approvals": 0,
+      "tokens": null,
+      "task_errors": {},
+      "run_error": "Planner failed: Planner produced no valid plan after 3 attempts: 1 validation error for ExecutionPlan\nsteps.4.acceptance.0\n  Value error, acceptance 'http_status' requires url [type=value_error, input_value={'type': 'http_status', '..._s': 5, 'timeout_s': 10}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.14/v/value_error",
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "app.py: missing"
+        },
+        {
+          "type": "http_status",
+          "ok": false,
+          "detail": "http://127.0.0.1:8767/ expected 200, got Endpoint check failed. The server might not be running or the URL is incorrect. Error: HTTPConnectionPool(host='127.0.0.1', port=8767): Max retries exceeded with url: / (Caused by NewConnectionError(\". Server output: [process fb256ab9: exited with code 1]\nD:\\"
+        }
+      ],
+      "time_s": 159.5
+    },
+    {
+      "id": "static_site",
+      "title": "Static HTML/CSS/JS page",
+      "passed": true,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 1,
+      "retries": 4,
+      "error_types": {
+        "rejected:SHELL_OPERATOR": 2,
+        "unknown": 2
+      },
+      "tool_calls": 6,
+      "llm_calls": 8,
+      "approvals": 0,
+      "tokens": 18944,
+      "task_errors": {
+        "2": "VERIFICATION_FAILED: - output_contains: `grep -c <script src=script.js> index.html` expected output containing '1'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "index.html: exists"
+        },
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "style.css: exists"
+        },
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "script.js: exists"
+        },
+        {
+          "type": "syntax_ok",
+          "ok": true,
+          "detail": "script.js: ok"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('index.html').read().count('style.css'))\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('index.html').read().count('script.js'))\"` output contains text"
+        }
+      ],
+      "time_s": 68.3
+    },
+    {
+      "id": "streamlit_app",
+      "title": "Streamlit data app",
+      "passed": false,
+      "run_status": "failed",
+      "tasks_total": 0,
+      "tasks_done": 0,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 0,
+      "llm_calls": 0,
+      "approvals": 0,
+      "tokens": null,
+      "task_errors": {},
+      "run_error": "Planner failed: Planner produced no valid plan after 3 attempts: 1 validation error for ExecutionPlan\nsteps.3.acceptance.0\n  Value error, acceptance 'http_status' requires url [type=value_error, input_value={'type': 'http_status', '...s': 15, 'timeout_s': 30}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.14/v/value_error",
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "app.py: missing"
+        },
+        {
+          "type": "syntax_ok",
+          "ok": false,
+          "detail": "app.py: ERROR: File 'app.py' does not exist."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"print('streamlit' in open('app.py').read())\"` expected output containing 'True'; exit=1; got: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    print('streamlit' in open('app.py').read())\n                         ~~~~^^^^^^^^^^\nFileNotFoundError: [Errno 2] No "
+        },
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "requirements.txt: missing"
+        }
+      ],
+      "time_s": 31.8
+    },
+    {
+      "id": "algo_tests",
+      "title": "Algorithm with unit tests",
+      "passed": false,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 2,
+      "error_types": {
+        "rejected:NOT_AN_INSTALL": 1,
+        "rejected:USE_INSTALL_DEPENDENCY": 1
+      },
+      "tool_calls": 13,
+      "llm_calls": 15,
+      "approvals": 1,
+      "tokens": 38869,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "sorting.py: exists"
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import sorting; print(sorting.merge_sort([3, 1, 2, 3]))\"` expected output containing '[1, 2, 3, 3]'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        },
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python -m pytest -q` exited 0"
+        }
+      ],
+      "time_s": 76.1
+    },
+    {
+      "id": "node_script",
+      "title": "Node script",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 2,
+      "tasks_done": 2,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 6,
+      "llm_calls": 6,
+      "approvals": 0,
+      "tokens": 12752,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`node sum.js 1 2 3` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`node sum.js 10 20` output contains text"
+        }
+      ],
+      "time_s": 28.5
+    },
+    {
+      "id": "json_config",
+      "title": "JSON config parser",
+      "passed": false,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 3,
+      "retries": 6,
+      "error_types": {
+        "rejected:SHELL_OPERATOR": 2,
+        "rejected:NOT_ALLOWED": 1,
+        "test_failure": 3
+      },
+      "tool_calls": 17,
+      "llm_calls": 20,
+      "approvals": 0,
+      "tokens": 54477,
+      "task_errors": {
+        "4": "VERIFICATION_FAILED: - command_ok: `python3 test_parser.py` failed (NOT_ALLOWED, exit=None): 'python3' is not an allowed command. Allowed: python, py, pip, node, npm, npx, uvicorn, pytest, streamlit, flask"
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import config_parser; print(config_parser.load_config('config.json')['port'])\"` expected output containing '8080'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import config_parser; print(config_parser.load_config('config.json')['host'])\"` expected output containing 'localhost'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        }
+      ],
+      "time_s": 97.7
+    },
+    {
+      "id": "package_bugfix",
+      "title": "Fix a bug in a multi-file package",
+      "passed": false,
+      "run_status": "failed",
+      "tasks_total": 4,
+      "tasks_done": 0,
+      "retries": 4,
+      "error_types": {
+        "missing_dependency": 4
+      },
+      "tool_calls": 9,
+      "llm_calls": 9,
+      "approvals": 0,
+      "tokens": 23125,
+      "task_errors": {
+        "1": "VERIFICATION_FAILED: - command_ok: `pytest tests/test_stats.py` failed (COMMAND_FAILED, exit=2): .\\..\\..\\..\\Programs\\Python\\Python313\\Lib\\importlib\\__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests\\test_s..."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python -m pytest -q` exited 0"
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import mathlib; print(mathlib.mean([2, 4]))\"` expected output containing '3'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        }
+      ],
+      "time_s": 50.7
+    },
+    {
+      "id": "add_function",
+      "title": "Add a function to an existing file",
+      "passed": false,
+      "run_status": "completed_with_failures",
+      "tasks_total": 3,
+      "tasks_done": 2,
+      "retries": 4,
+      "error_types": {
+        "rejected:SHELL_OPERATOR": 2,
+        "unknown": 2
+      },
+      "tool_calls": 14,
+      "llm_calls": 16,
+      "approvals": 0,
+      "tokens": 37846,
+      "task_errors": {
+        "3": "VERIFICATION_FAILED: - output_contains: `python -c \"from utils import slugify; print(slugify('Hello World 123!'))\"` expected output containing 'hello-world-123'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import utils; print(utils.slugify('Hello  World!'))\"` expected output containing 'hello-world'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import utils; print(utils.add(1, 2))\"` expected output containing '3'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import utils; print(utils.shout('hi'))\"` expected output containing 'HI!'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        }
+      ],
+      "time_s": 86.5
+    },
+    {
+      "id": "todo_cli",
+      "title": "To-do CLI with JSON persistence",
+      "passed": true,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 2,
+      "retries": 4,
+      "error_types": {
+        "unknown": 4
+      },
+      "tool_calls": 15,
+      "llm_calls": 15,
+      "approvals": 0,
+      "tokens": 34908,
+      "task_errors": {
+        "3": "VERIFICATION_FAILED: - output_contains: `python todo.py add test-task` expected output containing 'Task added'; exit=0; got: Added: test-task"
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python todo.py add buy-milk` exited 0"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python todo.py list` output contains text"
+        }
+      ],
+      "time_s": 112.0
+    },
+    {
+      "id": "csv_report",
+      "title": "CSV report script",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 9,
+      "llm_calls": 9,
+      "approvals": 0,
+      "tokens": 20612,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python report.py` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python report.py` output contains text"
+        }
+      ],
+      "time_s": 67.4
+    },
+    {
+      "id": "validators",
+      "title": "Input validators",
+      "passed": false,
+      "run_status": "completed_with_failures",
+      "tasks_total": 3,
+      "tasks_done": 2,
+      "retries": 4,
+      "error_types": {
+        "rejected:SHELL_OPERATOR": 2,
+        "test_failure": 2
+      },
+      "tool_calls": 17,
+      "llm_calls": 19,
+      "approvals": 0,
+      "tokens": 55115,
+      "task_errors": {
+        "3": "VERIFICATION_FAILED: - command_ok: `python -c \"from validators import is_email, is_phone; assert is_email('a@b.co') == True; assert is_email('a@b') == False; assert is_phone('+1 555-123-4567') == True; assert is_phone('12') == False\"` failed (SHELL_OPERATOR, exit=None): Shell operators (| & ; > < ` $( newline) are not a..."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import validators as v; print(v.is_email('a@b.co'), v.is_email('a@b'))\"` expected output containing 'True False'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import validators as v; print(v.is_phone('+1 555-123-4567'), v.is_phone('12'))\"` expected output containing 'True False'; exit=SHELL_OPERATOR; got: Shell operators (| & ; > < ` $( newline) are not allowed. Run one command at a time."
+        }
+      ],
+      "time_s": 248.6
+    },
+    {
+      "id": "tests_for_existing",
+      "title": "Write tests for existing code",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 8,
+      "llm_calls": 8,
+      "approvals": 0,
+      "tokens": 18512,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "test_shapes.py: exists"
+        },
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python -m pytest -q` exited 0"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('shapes.py').read().count('def '))\"` output contains text"
+        }
+      ],
+      "time_s": 41.3
+    }
+  ]
+}

@@ -57,7 +57,7 @@ RECENT EXECUTION HISTORY
 RULES
 ========================
 1. RAW CONTENT: When writing code to files, provide the RAW code. Do NOT wrap it in markdown code blocks like ```python ... ```.
-2. COMMANDS: run on {config.SHELL_HINT} without a shell. `run_command` runs ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <). Servers go through `start_process`; installs through `install_dependency`.
+2. COMMANDS: run on {config.SHELL_HINT} without a shell. Run tests with `python -m pytest` (not bare `pytest`). `run_command` runs ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <). Servers go through `start_process`; installs through `install_dependency`.
 3. FILES: Use `create_file` for NEW files. To change an existing file, `read_file` it first, then `write_file` or `patch_file`. `batch_file_operations` follows the same rules.
 4. COMPLETION: Call `task_complete` only after you have verified the task yourself. It is a request: the acceptance checks decide.
 """

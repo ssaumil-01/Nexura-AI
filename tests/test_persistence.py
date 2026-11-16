@@ -113,7 +113,7 @@ def test_run_is_persisted_logged_and_rendered(env):
         assert t in types, t
     log = ctx.logger.read()
     llm = [r for r in log if r["agent"] == "coder"]
-    assert llm and all(r["prompt_version"] == "1" and r["model"] == "fake" and r["run_id"] == ctx.run_id for r in llm)
+    assert llm and all(r["prompt_version"] == config.PROMPT_VERSIONS["coder"] and r["model"] == "fake" and r["run_id"] == ctx.run_id for r in llm)
     assert {"timestamp", "project_id", "run_id", "task_id", "agent", "prompt_version", "model", "input_summary", "output_summary", "result"} <= set(llm[0])
     md = (ctx.run_dir / "plan.md").read_text(encoding="utf-8")
     assert "- [x] **Step 1: first**" in md and "- [x] **Step 2: second**" in md and "completed" in md

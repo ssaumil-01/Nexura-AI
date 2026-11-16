@@ -69,6 +69,16 @@ from pydantic import model_validator  # noqa: E402
 ACCEPTANCE_TYPES = ("file_exists", "syntax_ok", "command_ok", "output_contains", "http_status")
 
 
+DEFAULT_PORTS = {"streamlit": 8501, "flask": 5000, "uvicorn": 8000, "http.server": 8000, "manage.py": 8000}
+
+
+def infer_url(start_command: str) -> str | None:
+    import re
+    m = re.search(r"(?:--port|--server\.port|-p)[ =]+(\d{2,5})\b", start_command) or re.search(r":(\d{2,5})\b", start_command)
+    port = int(m.group(1)) if m else next((p for k, p in DEFAULT_PORTS.items() if k in start_command), None)
+    return f"http://127.0.0.1:{port}/" if port else None
+
+
 class Acceptance(BaseModel):
     """One objectively checkable condition for a step. Flat (not a union) so it works as an LLM response schema;
     required fields per `type` are enforced by the validator below."""
@@ -82,6 +92,16 @@ class Acceptance(BaseModel):
     expect: Optional[int] = Field(default=None, description="http_status: expected status code (default 200)")
     wait_s: Optional[int] = Field(default=None, description="http_status: seconds to wait for the server (default 10)")
     timeout_s: Optional[int] = Field(default=None, description="command_ok / output_contains: timeout in seconds")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_url(cls, data):
+        """Models often give only the start command for http_status; take the URL from its port (or the framework default)."""
+        if isinstance(data, dict) and data.get("type") == "http_status" and not data.get("url") and data.get("start_command"):
+            url = infer_url(str(data["start_command"]))
+            if url:
+                data = {**data, "url": url}
+        return data
 
     @model_validator(mode="after")
     def _required_fields(self):
