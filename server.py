@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from langgraph.types import Command
 from core.graph import build_graph
 from core.schemas import ProjectContext
+from core.task_manager import run_summary
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -99,6 +100,9 @@ async def get_file_content(project_id: str, path: str):
     with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
         return {"content": f.read()}
 
+_STREAM_DONE = object()
+
+
 async def event_generator(project_id: str, prompt: str = None, resume_input: str = None, interactive: bool = False):
     """Generator for streaming graph events using SSE."""
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
@@ -127,6 +131,13 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
             "is_interactive": interactive,
             "plan_feedback": None,
             "tool_calls_count": 0,
+            "task_status": {},
+            "task_errors": {},
+            "run_status": None,
+            "run_error": None,
+            "task_outcome": None,
+            "task_reason": None,
+            "replan_count": 0,
         }
     else:
         yield {"event": "error", "data": "Prompt or resume input required"}
@@ -134,7 +145,12 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
 
     try:
         # stream() is a generator
-        for event in graph.stream(input_data, config, stream_mode="updates"):
+        # graph.stream is synchronous: pull each event in a worker thread so the event loop stays free
+        events = iter(graph.stream(input_data, config, stream_mode="updates"))
+        while True:
+            event = await asyncio.to_thread(next, events, _STREAM_DONE)
+            if event is _STREAM_DONE:
+                break
             for node_name, updates in event.items():
                 payload = {"node": node_name, "updates": updates}
                 
@@ -176,7 +192,7 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
                             }
 
         # Check for interrupts
-        snapshot = graph.get_state(config)
+        snapshot = await asyncio.to_thread(graph.get_state, config)
         if snapshot.next:
             if snapshot.tasks and snapshot.tasks[0].interrupts:
                 interrupt_val = snapshot.tasks[0].interrupts[0].value
@@ -185,7 +201,8 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
                     "data": json.dumps({"message": str(interrupt_val)})
                 }
         else:
-            yield {"event": "complete", "data": "Pipeline complete"}
+            summary = run_summary(snapshot.values)
+            yield {"event": "complete", "data": json.dumps(summary)}
 
     except Exception as e:
         import traceback
