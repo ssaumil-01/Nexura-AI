@@ -48,7 +48,7 @@ except ValueError:
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
 # --- Prompts / environment hints ---------------------------
-PROMPT_VERSIONS = {"planner": "3", "coder": "2", "debugger": "1"}
+PROMPT_VERSIONS = {"planner": "4", "coder": "2", "debugger": "1"}
 SHELL_HINT = os.getenv("NEXURA_SHELL_HINT", "Windows PowerShell" if os.name == "nt" else "POSIX sh")
 
 
