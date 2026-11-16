@@ -1,7 +1,4 @@
-import asyncio
 import json
-import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -152,40 +149,6 @@ def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):
     out = planner_node({"user_prompt": "x", "workspace_path": planner.path}, cfg)
     assert out["run_status"] == "failed" and "boom" in out["run_error"]
     assert route_after_planner(out) == END
-
-
-# ─── server does not block the event loop (2.13) ────────────
-
-def test_server_stream_does_not_block_event_loop(monkeypatch, tmp_path):
-    monkeypatch.setenv("CODER_MODEL_NAME", "gemini-test")
-    monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
-    import server
-
-    class FakeGraph:
-        def stream(self, *a, **k):
-            time.sleep(0.6)  # a slow, blocking graph step
-            yield {"planner": {"x": 1}}
-
-        def get_state(self, c):
-            return SimpleNamespace(next=(), tasks=(), values={"run_status": "completed", "task_status": {}, "tasks": []})
-
-    monkeypatch.setattr(server, "build_graph", lambda **k: FakeGraph())
-
-    async def main():
-        ticks = 0
-
-        async def ticker():
-            nonlocal ticks
-            while True:
-                await asyncio.sleep(0.02)
-                ticks += 1
-        t = asyncio.create_task(ticker())
-        events = [e async for e in server.event_generator("proj", prompt="hi")]
-        t.cancel()
-        return ticks, events
-    ticks, events = asyncio.run(main())
-    assert ticks > 10  # the loop kept running during the 0.6s blocking step
-    assert events[-1]["event"] == "complete" and json.loads(events[-1]["data"])["run_status"] == "completed"
 
 
 def test_load_tasks_from_plan_dict():

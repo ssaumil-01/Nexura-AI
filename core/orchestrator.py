@@ -386,7 +386,8 @@ def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
             ctx.emit("secret_redacted", task["step_id"], tool=p["name"])
         msgs.append(_tool_msg(safe, p, not res.ok))
         hist.append(_hist(task, p["name"], p["args"], safe, "ok" if res.ok else "error"))
-        ctx.emit("tool_call", task["step_id"], agent="executor", tool=p["name"], ok=res.ok, code=res.code)
+        ctx.emit("tool_call", task["step_id"], agent="executor", tool=p["name"], ok=res.ok, code=res.code,
+                 args=redact_secrets(_short(p["args"], 300)), summary=_short(safe, 300))
         if action.action == "read_file" and res.ok and action.path:
             try:
                 full = resolve_in_root(ctx.root, action.path)

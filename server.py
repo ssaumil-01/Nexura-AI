@@ -1,232 +1,269 @@
-import os
-import json
+"""Nexura local API. Binds to 127.0.0.1 only; every request needs `Authorization: Bearer <NEXURA_TOKEN>`.
+The workspace path is registered once (POST /workspaces) and never taken from a request body afterwards."""
 import asyncio
-from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+import hashlib
+import hmac
+import json
+import os
+import re
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
-from dotenv import load_dotenv
 
-from langgraph.types import Command
-from core.orchestrator import build_graph
-from core.schemas import ProjectContext
-from core.task_manager import run_summary
-
-from core.state_manager import make_checkpointer
-
-load_dotenv()
 import config as nexura_config
-nexura_config.configure_observability()
+from core import metrics as metrics_mod
+from core import runner
+from core.checkpoints import GitError
+from core.orchestrator import build_graph
+from core.run_manager import RunManager, StateError
+from core.runner import DirtyWorkspace, ResumeError
+from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 
-app = FastAPI(title="Nexura-AI Server")
-
-# Enable CORS for frontend interaction
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# In-memory storage for active graphs and states
-# In a production app, this would use a persistent store or database
-_checkpointer = None
+ID = re.compile(r"^[a-f0-9]{8,64}$")
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+MAX_PROMPT = 20_000
 
 
-def get_checkpointer():
-    """One durable (SQLite) checkpointer shared by all runs."""
-    global _checkpointer
-    if _checkpointer is None:
-        _checkpointer = make_checkpointer(nexura_config.CHECKPOINT_DB_PATH)
-    return _checkpointer
+# ─── request models ─────────────────────────────────────────
 
-class ChatRequest(BaseModel):
-    project_id: str
-    prompt: Optional[str] = None
-    resume_input: Optional[str] = None
-    interactive: bool = False
-
-class ProjectCreate(BaseModel):
-    project_id: str
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Nexura-AI Server is running"}
-
-@app.post("/projects")
-async def create_project(req: ProjectCreate):
-    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", req.project_id)
-    os.makedirs(workspace_path, exist_ok=True)
-    return {"project_id": req.project_id, "path": workspace_path}
-
-@app.get("/projects")
-async def list_projects():
-    workspace_dir = os.path.join(os.path.dirname(__file__), "workspace")
-    if not os.path.exists(workspace_dir):
-        return []
-    return [d for d in os.listdir(workspace_dir) if os.path.isdir(os.path.join(workspace_dir, d))]
-
-@app.get("/files/{project_id}")
-async def list_files(project_id: str, path: str = "."):
-    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
-    target_path = os.path.abspath(os.path.join(workspace_path, path))
-    
-    if not target_path.startswith(os.path.abspath(workspace_path)):
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    if not os.path.exists(target_path):
-        return []
-        
-    items = []
-    for item in os.listdir(target_path):
-        if item == ".git" or item == "__pycache__": continue
-        item_path = os.path.join(target_path, item)
-        is_dir = os.path.isdir(item_path)
-        items.append({
-            "name": item,
-            "is_dir": is_dir,
-            "path": os.path.relpath(item_path, workspace_path).replace("\\", "/")
-        })
-    return items
-
-@app.get("/file-content/{project_id}")
-async def get_file_content(project_id: str, path: str):
-    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
-    target_path = os.path.abspath(os.path.join(workspace_path, path))
-    
-    if not target_path.startswith(os.path.abspath(workspace_path)):
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    if not os.path.exists(target_path) or os.path.isdir(target_path):
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
-        return {"content": f.read()}
-
-_STREAM_DONE = object()
+class WorkspaceReq(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    trusted: bool = False
 
 
-async def event_generator(project_id: str, prompt: str = None, resume_input: str = None, interactive: bool = False):
-    """Generator for streaming graph events using SSE."""
-    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
-    
-    project = ProjectContext(run_id=project_id, root=workspace_path)
-    graph = build_graph(interactive=interactive, checkpointer=get_checkpointer())
-    config = {"configurable": {"thread_id": project_id, "project": project}}
-    
-    if resume_input:
-        # Resuming from an interrupt
-        input_data = Command(resume=resume_input)
-    elif prompt:
-        # Starting fresh
-        input_data = {
-            "messages": [],
-            "user_prompt": prompt,
-            "workspace_path": workspace_path,
-            "plan": None,
-            "tasks": [],
-            "current_task_index": 0,
-            "execution_history": [],
-            "is_interactive": interactive,
-            "plan_feedback": None,
-            "tool_calls_count": 0,
-            "task_status": {},
-            "task_errors": {},
-            "run_status": None,
-            "run_error": None,
-            "task_outcome": None,
-            "task_reason": None,
-            "replan_count": 0,
-        }
-    else:
-        yield {"event": "error", "data": "Prompt or resume input required"}
-        return
+class RunReq(BaseModel):
+    workspace_id: str
+    prompt: str = Field(min_length=1, max_length=MAX_PROMPT)
+    approval_level: Literal["ask_every_edit", "ask_risky", "auto_within_limits"] = "ask_risky"
+    dirty_policy: Literal["checkpoint", "abort"] = "checkpoint"
+    dirty_files: list[str] = Field(default_factory=list, max_length=500)
+    git_init: bool = False
 
-    try:
-        # stream() is a generator
-        # graph.stream is synchronous: pull each event in a worker thread so the event loop stays free
-        events = iter(graph.stream(input_data, config, stream_mode="updates"))
-        while True:
-            event = await asyncio.to_thread(next, events, _STREAM_DONE)
-            if event is _STREAM_DONE:
-                break
-            for node_name, updates in event.items():
-                payload = {"node": node_name, "updates": updates}
-                
-                # Special handling for AI messages to stream them correctly
-                if node_name == "coder_agent":
-                    msgs = updates.get("messages", [])
-                    for msg in msgs:
-                        # Extract message content for a cleaner event
-                        from langchain_core.messages import AIMessage
-                        if isinstance(msg, AIMessage):
-                            yield {
-                                "event": "graph_update",
-                                "data": json.dumps({
-                                    "node": "coder_agent",
-                                    "updates": {
-                                        "messages": [{"content": msg.content, "type": "ai"}]
-                                    }
-                                })
-                            }
-                            continue
 
-                # Generic update
-                yield {
-                    "event": "graph_update",
-                    "data": json.dumps(payload, default=str)
-                }
+class PlanReq(BaseModel):
+    decision: Literal["approve", "feedback"]
+    text: Optional[str] = Field(default=None, max_length=MAX_PROMPT)
 
-                # Tool logging
-                if node_name == "tools":
-                    msgs = updates.get("messages", [])
-                    for msg in msgs:
-                        if hasattr(msg, "content"):
-                            yield {
-                                "event": "tool_update",
-                                "data": json.dumps({
-                                    "tool": getattr(msg, "name", "unknown"),
-                                    "content": str(msg.content)[:100]
-                                })
-                            }
 
-        # Check for interrupts
-        snapshot = await asyncio.to_thread(graph.get_state, config)
-        if snapshot.next:
-            if snapshot.tasks and snapshot.tasks[0].interrupts:
-                interrupt_val = snapshot.tasks[0].interrupts[0].value
-                yield {
-                    "event": "interrupt",
-                    "data": json.dumps({"message": str(interrupt_val)})
-                }
-        else:
-            summary = run_summary(snapshot.values)
-            yield {"event": "complete", "data": json.dumps(summary)}
+class ApproveReq(BaseModel):
+    decision: Literal["approve", "reject"]
+    note: Optional[str] = Field(default=None, max_length=2000)
 
-    except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        yield {"event": "error", "data": str(e)}
-    finally:
-        project.processes.stop_all()
 
-@app.get("/chat/stream")
-async def chat_stream(
-    project_id: str, 
-    prompt: Optional[str] = None, 
-    resume_input: Optional[str] = None, 
-    interactive: bool = False
-):
-    return EventSourceResponse(event_generator(
-        project_id, 
-        prompt=prompt, 
-        resume_input=resume_input, 
-        interactive=interactive
-    ))
+class UndoReq(BaseModel):
+    scope: Literal["task", "run"]
+    task_id: Optional[int] = None
+    confirm_conflicts: bool = False
+
+
+class EditsReq(BaseModel):
+    files: list[str] = Field(max_length=500)
+
+
+def workspace_id_for(path: str) -> str:
+    return hashlib.sha256(os.path.normcase(os.path.realpath(path)).encode("utf-8")).hexdigest()[:32]
+
+
+def _host_name(host_header: str) -> str:
+    h = (host_header or "").strip().lower()
+    return h.split("]")[0] + "]" if h.startswith("[") else h.rsplit(":", 1)[0] if ":" in h else h
+
+
+def create_app(token: str | None = None, sm: StateManager | None = None, checkpointer=None) -> FastAPI:
+    token = token or os.getenv("NEXURA_TOKEN")
+    if not token or len(token) < 16:
+        raise RuntimeError("NEXURA_TOKEN must be set to a secret of at least 16 characters.")
+    sm = sm or StateManager(nexura_config.DB_PATH)
+    manager = RunManager(sm, checkpointer or make_checkpointer(nexura_config.CHECKPOINT_DB_PATH), build_graph)
+    workspaces: dict[str, dict] = {}   # workspace_id -> {"path", "trusted"} (registered by the extension)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        await asyncio.to_thread(manager.shutdown)
+
+    app = FastAPI(title="Nexura-AI", lifespan=lifespan)   # no CORS middleware: only the extension host calls this
+    app.state.manager, app.state.sm = manager, sm
+
+    @app.middleware("http")
+    async def only_localhost(request: Request, call_next):
+        if _host_name(request.headers.get("host", "")) not in LOCAL_HOSTS:   # also blocks DNS rebinding
+            return JSONResponse({"detail": "Only localhost is allowed."}, status_code=403)
+        return await call_next(request)
+
+    def auth(authorization: str | None = Header(default=None)) -> None:
+        supplied = authorization[7:] if authorization and authorization.lower().startswith("bearer ") else ""
+        if not hmac.compare_digest(supplied.encode(), token.encode()):
+            raise HTTPException(status_code=401, detail="Missing or invalid token.", headers={"WWW-Authenticate": "Bearer"})
+
+    def check_id(value: str, what: str = "id") -> str:
+        if not ID.match(value):
+            raise HTTPException(status_code=422, detail=f"Invalid {what}.")
+        return value
+
+    def workspace_of(workspace_id: str) -> dict:
+        ws = workspaces.get(check_id(workspace_id, "workspace_id"))
+        if ws is None:
+            raise HTTPException(status_code=404, detail="Unknown workspace. Register it with POST /workspaces first.")
+        return ws
+
+    def run_or_404(run_id: str):
+        row = sm.get_run(check_id(run_id, "run_id"))
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such run.")
+        return row
+
+    def start_errors(fn):
+        try:
+            return fn()
+        except GitError as e:
+            raise HTTPException(status_code=409, detail={"code": e.code, "message": e.message})
+        except DirtyWorkspace as e:
+            raise HTTPException(status_code=409, detail={"code": "DIRTY_WORKSPACE", "message": str(e), "files": e.files[:100]})
+        except WorkspaceBusy as e:
+            raise HTTPException(status_code=409, detail={"code": "WORKSPACE_BUSY", "message": str(e)})
+        except ResumeError as e:
+            raise HTTPException(status_code=409, detail={"code": "CANNOT_RESUME", "message": str(e)})
+
+    # ── endpoints ──
+    @app.get("/health", dependencies=[Depends(auth)])
+    async def health():
+        return {"ok": True, "active_runs": sum(1 for h in manager.runs.values() if h.state != "finished")}
+
+    @app.post("/workspaces", dependencies=[Depends(auth)])
+    async def register_workspace(req: WorkspaceReq):
+        p = Path(req.path)
+        if not p.is_absolute() or not p.is_dir():
+            raise HTTPException(status_code=400, detail="path must be an existing absolute directory.")
+        wid = workspace_id_for(str(p))
+        workspaces[wid] = {"path": str(p.resolve()), "trusted": req.trusted}
+        sm.upsert_project(wid, str(p.resolve()))
+        return {"workspace_id": wid}
+
+    @app.post("/runs", dependencies=[Depends(auth)])
+    async def create_run(req: RunReq):
+        ws = workspace_of(req.workspace_id)
+        ctx, state = await asyncio.to_thread(start_errors, lambda: runner.start_run(
+            sm, req.workspace_id, ws["path"], req.prompt, approval_level=req.approval_level, git_init=req.git_init,
+            dirty_policy=req.dirty_policy, dirty_files=req.dirty_files, trusted=ws["trusted"]))
+        manager.start(ctx, state)
+        return {"run_id": ctx.run_id}
+
+    @app.get("/runs/{run_id}", dependencies=[Depends(auth)])
+    async def get_run(run_id: str):
+        check_id(run_id, "run_id")
+        h = manager.get(run_id)
+        state, waiting, summary = (h.state, h.waiting, h.final) if h else ("idle", None, None)   # read BEFORE the DB:
+        row = run_or_404(run_id)                                  # a finished handle always has its final DB status already
+        tasks = [{k: t[k] for k in ("task_id", "title", "status", "attempts", "reason")} for t in sm.list_tasks(row.id)]
+        return {"run_id": row.id, "status": row.status, "error": row.error, "prompt": row.prompt, "tasks": tasks,
+                "state": state, "waiting": waiting, "summary": summary, "plan": row.plan}
+
+    @app.get("/runs/{run_id}/events", dependencies=[Depends(auth)])
+    async def run_events(run_id: str, last_event_id: Optional[str] = Header(default=None)):
+        row = run_or_404(run_id)
+        try:
+            last = int(last_event_id or 0)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid Last-Event-ID.")
+        h = manager.get(row.id)
+
+        async def gen():
+            nonlocal last
+            if h is None:   # not active in this process: replay what the DB knows
+                for e in sm.list_events(row.id):
+                    if e["id"] > last:
+                        yield {"id": str(e["id"]), "event": e["type"], "data": json.dumps(e["data"], default=str)}
+                return
+            while True:
+                for e in h.since(last):
+                    last = e["id"]
+                    yield {"id": str(e["id"]), "event": e["event"], "data": json.dumps(e["data"], default=str)}
+                if h.state == "finished" and not h.since(last):
+                    return
+                await asyncio.sleep(0.05)
+        return EventSourceResponse(gen())
+
+    def respond(run_id: str, kind: str, value) -> dict:
+        run_or_404(run_id)
+        try:
+            manager.respond(run_id, kind, value)
+        except StateError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"ok": True}
+
+    @app.post("/runs/{run_id}/plan", dependencies=[Depends(auth)])
+    async def plan_decision(run_id: str, req: PlanReq):
+        if req.decision == "feedback" and not (req.text or "").strip():
+            raise HTTPException(status_code=422, detail="feedback requires text.")
+        return respond(run_id, "plan", "yes" if req.decision == "approve" else req.text.strip())
+
+    @app.post("/runs/{run_id}/approve", dependencies=[Depends(auth)])
+    async def approve(run_id: str, req: ApproveReq):
+        return respond(run_id, "approval", {"decision": req.decision, "note": req.note or ""})
+
+    @app.post("/runs/{run_id}/cancel", dependencies=[Depends(auth)])
+    async def cancel(run_id: str):
+        row = run_or_404(run_id)
+        if not manager.cancel(row.id):
+            raise HTTPException(status_code=409, detail="The run is not active.")
+        return {"ok": True}
+
+    @app.post("/runs/{run_id}/resume", dependencies=[Depends(auth)])
+    async def resume(run_id: str):
+        row = run_or_404(run_id)
+        if manager.active(row.id):
+            raise HTTPException(status_code=409, detail="The run is still active.")
+        ws = workspaces.get(row.project_id)
+        if ws is None:
+            raise HTTPException(status_code=409, detail="Register the workspace (POST /workspaces) before resuming.")
+        ctx, state = await asyncio.to_thread(start_errors, lambda: runner.prepare_resume(sm, row.id, trusted=ws["trusted"]))
+        manager.start(ctx, state, thread_id=manager.resume_thread_id(row.id))
+        return {"run_id": row.id}
+
+    @app.post("/runs/{run_id}/undo", dependencies=[Depends(auth)])
+    async def undo(run_id: str, req: UndoReq):
+        row = run_or_404(run_id)
+        if manager.active(row.id):
+            raise HTTPException(status_code=409, detail="Stop the run before undoing its changes.")
+        if req.scope == "task" and req.task_id is None:
+            raise HTTPException(status_code=422, detail="task_id is required for scope 'task'.")
+        res = await asyncio.to_thread(runner.undo, sm, row.id, req.task_id if req.scope == "task" else None, req.confirm_conflicts)
+        return {"applied": res.applied, "restored": res.restored, "deleted": res.deleted, "conflicts": res.conflicts, "error": res.error}
+
+    @app.post("/runs/{run_id}/edits", dependencies=[Depends(auth)])
+    async def external_edits(run_id: str, req: EditsReq):
+        """The extension reports files the user edited during the run (pauses the run before it overwrites them)."""
+        row = run_or_404(run_id)
+        h = manager.get(row.id)
+        if h is None or h.state == "finished":
+            raise HTTPException(status_code=409, detail="The run is not active.")
+        marked = 0
+        for f in req.files:
+            try:
+                h.ctx.external_edits.add(h.ctx.key(h.ctx.root / f))
+                marked += 1
+            except ValueError:
+                pass
+        return {"marked": marked}
+
+    @app.get("/metrics/{run_id}", dependencies=[Depends(auth)])
+    async def metrics(run_id: str):
+        m = metrics_mod.compute(sm, check_id(run_id, "run_id"))
+        if m is None:
+            raise HTTPException(status_code=404, detail="No such run.")
+        return m
+
+    return app
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    nexura_config.configure_observability()
+    port = int(os.getenv("NEXURA_PORT", "8000"))
+    uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="warning")
