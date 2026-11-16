@@ -36,7 +36,7 @@ def _diff(rel: str, before: str | None, after: str | None) -> tuple[str, int]:
     a = (before or "").splitlines(keepends=True)
     b = (after or "").splitlines(keepends=True)
     lines = list(difflib.unified_diff(a, b, f"a/{rel}", f"b/{rel}", n=2))
-    changed = sum(1 for l in lines if l[:1] in "+-" and not l.startswith(("+++", "---")))
+    changed = sum(1 for ln in lines if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
     return "".join(lines)[:MAX_PREVIEW_CHARS], changed
 
 

@@ -1,0 +1,201 @@
+# Eval tasks: each is run end to end against a fresh temporary git repo. `checks` use the same schema as plan
+# acceptance checks but are written by us, independently of what the planner/agent decide. All commands are single
+# programs (no shell operators). Paths are relative to the project folder.
+# Fields: id, title, prompt, seed (files created+committed first), checks, smoke (fake-LLM CI smoke), needs (node|network)
+
+- id: fake_hello
+  title: Scripted smoke test (fake model, CI only)
+  smoke: true
+  prompt: Create a file hello.txt containing a greeting.
+  checks:
+    - {type: file_exists, path: hello.txt}
+    - {type: output_contains, command: 'python -c "print(open(''hello.txt'').read())"', text: Hello}
+
+- id: calc_cli
+  title: Python CLI calculator
+  prompt: >
+    Create calc.py, a command line calculator. `python calc.py 2+3*4` must print exactly 14 (standard operator
+    precedence; support + - * / and parentheses; never use eval on unchecked input).
+  checks:
+    - {type: file_exists, path: calc.py}
+    - {type: output_contains, command: python calc.py 2+3*4, text: "14"}
+    - {type: output_contains, command: python calc.py (1+2)*3, text: "9"}
+
+- id: fastapi_users
+  title: FastAPI health and users endpoints
+  needs: network
+  prompt: >
+    Create a FastAPI app in app.py with GET /health returning {"status": "ok"} and GET /users returning a JSON
+    list of at least two users, each with id and name. It must start with `python -m uvicorn app:app --port 8765`.
+    Add requirements.txt.
+  checks:
+    - {type: file_exists, path: app.py}
+    - {type: http_status, start_command: python -m uvicorn app:app --port 8765, url: "http://127.0.0.1:8765/health", expect: 200, wait_s: 20}
+    - {type: http_status, start_command: python -m uvicorn app:app --port 8766, url: "http://127.0.0.1:8766/users", expect: 200, wait_s: 20}
+
+- id: flask_hello
+  title: Flask hello app
+  needs: network
+  prompt: >
+    Create a Flask app in app.py whose route / returns the text "Hello, Nexura!". Run it with
+    `python -m flask --app app run --port 8767`. Add requirements.txt.
+  checks:
+    - {type: file_exists, path: app.py}
+    - {type: http_status, start_command: python -m flask --app app run --port 8767, url: "http://127.0.0.1:8767/", expect: 200, wait_s: 20}
+
+- id: static_site
+  title: Static HTML/CSS/JS page
+  prompt: >
+    Create a static landing page: index.html that links style.css and script.js, with a heading, a button, and
+    script.js that changes the heading text when the button is clicked.
+  checks:
+    - {type: file_exists, path: index.html}
+    - {type: file_exists, path: style.css}
+    - {type: file_exists, path: script.js}
+    - {type: syntax_ok, paths: [script.js]}
+    - {type: output_contains, command: 'python -c "print(open(''index.html'').read().count(''style.css''))"', text: "1"}
+    - {type: output_contains, command: 'python -c "print(open(''index.html'').read().count(''script.js''))"', text: "1"}
+
+- id: streamlit_app
+  title: Streamlit data app
+  needs: network
+  prompt: >
+    Create app.py, a Streamlit app that shows a slider, generates random data with numpy or pandas, and displays a
+    line chart. Add requirements.txt listing the dependencies.
+  checks:
+    - {type: file_exists, path: app.py}
+    - {type: syntax_ok, paths: [app.py]}
+    - {type: output_contains, command: 'python -c "print(''streamlit'' in open(''app.py'').read())"', text: "True"}
+    - {type: file_exists, path: requirements.txt}
+
+- id: algo_tests
+  title: Algorithm with unit tests
+  needs: network
+  prompt: >
+    Create sorting.py with merge_sort(items) returning a new sorted list, and test_sorting.py with pytest tests
+    covering empty, single, duplicates and already-sorted input. The tests must pass with `python -m pytest -q`.
+  checks:
+    - {type: file_exists, path: sorting.py}
+    - {type: output_contains, command: 'python -c "import sorting; print(sorting.merge_sort([3, 1, 2, 3]))"', text: "[1, 2, 3, 3]"}
+    - {type: command_ok, command: python -m pytest -q, timeout_s: 120}
+
+- id: node_script
+  title: Node script
+  needs: node
+  prompt: >
+    Create sum.js, a Node.js script that prints the sum of its numeric command line arguments.
+    `node sum.js 1 2 3` must print 6.
+  checks:
+    - {type: output_contains, command: node sum.js 1 2 3, text: "6"}
+    - {type: output_contains, command: node sum.js 10 20, text: "30"}
+
+- id: json_config
+  title: JSON config parser
+  seed:
+    config.json: '{"host": "localhost", "port": 8080, "debug": true}'
+  prompt: >
+    Create config_parser.py with load_config(path) that reads a JSON file and returns a dict, raising ValueError
+    with a clear message if "host" or "port" is missing or port is not an integer between 1 and 65535.
+    Use config.json as the example.
+  checks:
+    - {type: output_contains, command: 'python -c "import config_parser; print(config_parser.load_config(''config.json'')[''port''])"', text: "8080"}
+    - {type: output_contains, command: 'python -c "import config_parser; print(config_parser.load_config(''config.json'')[''host''])"', text: localhost}
+
+- id: package_bugfix
+  title: Fix a bug in a multi-file package
+  seed:
+    mathlib/__init__.py: "from .stats import mean, median\n"
+    mathlib/stats.py: |
+      def mean(values):
+          return sum(values) / (len(values) + 1)
+
+
+      def median(values):
+          s = sorted(values)
+          mid = len(s) // 2
+          return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+    tests/test_stats.py: |
+      from mathlib import mean, median
+
+
+      def test_mean():
+          assert mean([1, 2, 3]) == 2
+
+
+      def test_median():
+          assert median([3, 1, 2]) == 2
+          assert median([1, 2, 3, 4]) == 2.5
+  needs: network
+  prompt: The test in tests/test_stats.py fails. Find and fix the bug in the package without changing the tests.
+  checks:
+    - {type: command_ok, command: python -m pytest -q, timeout_s: 120}
+    - {type: output_contains, command: 'python -c "import mathlib; print(mathlib.mean([2, 4]))"', text: "3"}
+
+- id: add_function
+  title: Add a function to an existing file
+  seed:
+    utils.py: |
+      def add(a, b):
+          return a + b
+
+
+      def shout(text):
+          return text.upper() + "!"
+  prompt: >
+    Add a function slugify(text) to utils.py that lowercases the text, turns runs of spaces into single hyphens and
+    removes characters other than letters, digits and hyphens. Do not change the existing functions.
+  checks:
+    - {type: output_contains, command: 'python -c "import utils; print(utils.slugify(''Hello  World!''))"', text: hello-world}
+    - {type: output_contains, command: 'python -c "import utils; print(utils.add(1, 2))"', text: "3"}
+    - {type: output_contains, command: 'python -c "import utils; print(utils.shout(''hi''))"', text: HI!}
+
+- id: todo_cli
+  title: To-do CLI with JSON persistence
+  prompt: >
+    Create todo.py with subcommands: `python todo.py add <text>` stores a task in todos.json, and
+    `python todo.py list` prints one task per line. Tasks must persist between runs.
+  checks:
+    - {type: command_ok, command: python todo.py add buy-milk}
+    - {type: output_contains, command: python todo.py list, text: buy-milk}
+
+- id: csv_report
+  title: CSV report script
+  seed:
+    sales.csv: "region,amount\nnorth,100\nsouth,250\nnorth,50\n"
+  prompt: >
+    Create report.py that reads sales.csv and prints the total amount per region, one `region: total` line each,
+    sorted by region name.
+  checks:
+    - {type: output_contains, command: python report.py, text: "north: 150"}
+    - {type: output_contains, command: python report.py, text: "south: 250"}
+
+- id: validators
+  title: Input validators
+  prompt: >
+    Create validators.py with is_email(text) and is_phone(text) returning booleans. is_email accepts
+    "a@b.co" and rejects "a@b"; is_phone accepts "+1 555-123-4567" and rejects "12".
+  checks:
+    - {type: output_contains, command: 'python -c "import validators as v; print(v.is_email(''a@b.co''), v.is_email(''a@b''))"', text: "True False"}
+    - {type: output_contains, command: 'python -c "import validators as v; print(v.is_phone(''+1 555-123-4567''), v.is_phone(''12''))"', text: "True False"}
+
+- id: tests_for_existing
+  title: Write tests for existing code
+  needs: network
+  seed:
+    shapes.py: |
+      import math
+
+
+      def circle_area(r):
+          if r < 0:
+              raise ValueError("negative radius")
+          return math.pi * r * r
+
+
+      def rect_area(w, h):
+          return w * h
+  prompt: Add pytest tests for shapes.py in test_shapes.py (cover the error case). Do not modify shapes.py.
+  checks:
+    - {type: file_exists, path: test_shapes.py}
+    - {type: command_ok, command: python -m pytest -q, timeout_s: 120}
+    - {type: output_contains, command: 'python -c "print(open(''shapes.py'').read().count(''def ''))"', text: "2"}

@@ -1,0 +1,7 @@
+line-length = 140
+target-version = "py311"
+extend-exclude = ["tools/github_tool.py", "App", "extension", "ui", "workspace", "memory", ".venv"]
+
+[lint]
+select = ["E", "F", "W", "B"]
+ignore = ["W291", "W292", "W293", "E501", "B008", "B904", "E701", "E702", "E731"]

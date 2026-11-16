@@ -1,0 +1,55 @@
+# CI for this repository's own checks only (not CI/CD for generated projects).
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }          # the scope audit diffs against the base commit
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+      - run: python evals/run.py --fake --out evals/results/_ci
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm run setup
+        working-directory: extension
+      - run: npm run typecheck
+        working-directory: extension
+      - run: npm run package
+        working-directory: extension
+
+  extension-e2e:      # real VS Code, scripted model; not yet verified on Linux runners, so it never blocks merges
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - run: python -m venv .venv && .venv/bin/pip install -r requirements.txt
+      - run: npm run setup && npm run build
+        working-directory: extension
+      - run: xvfb-run -a npm test
+        working-directory: extension

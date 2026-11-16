@@ -1,8 +1,6 @@
 """Phase 3: validator, execution manager, verification, retry/debug loop, tool isolation, context budget."""
 import ast
-import json
 import socket
-import time
 from pathlib import Path
 
 import pytest

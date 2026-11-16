@@ -62,7 +62,7 @@ class ProjectContext(BaseModel):
 
 # ─── PLAN MODELS ────────────────────────────────────────────
 
-from typing import Literal, Optional  # noqa: E402
+from typing import Optional  # noqa: E402
 
 from pydantic import model_validator  # noqa: E402
 

@@ -13,7 +13,6 @@ from core.runner import DirtyWorkspace, start_run, undo
 from core.schemas import Action, ProjectContext
 from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 from core.task_manager import load_tasks
-from tests.conftest import tool_call_msg
 
 
 def git(root, *a):

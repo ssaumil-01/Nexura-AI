@@ -1,6 +1,5 @@
 import os
 import re
-from typing import Optional
 from dotenv import load_dotenv
 
 from langchain_core.prompts import PromptTemplate

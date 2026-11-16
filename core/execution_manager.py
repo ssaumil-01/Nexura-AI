@@ -2,7 +2,6 @@
 Never raises: failures come back as ExecResult(ok=False, code=...)."""
 import hashlib
 import json
-import os
 import re
 import time
 

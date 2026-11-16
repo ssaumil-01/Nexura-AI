@@ -28,3 +28,4 @@ extension/out-test/
 extension/.vscode-test/
 .vscode-test/
 ui/dist/
+.evalvenv/
