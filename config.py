@@ -30,6 +30,7 @@ ALLOWED_COMMANDS = ["python", "py", "pip", "node", "npm", "npx", "uvicorn", "pyt
 ALLOWED_ACTIONS = [
     "create_file", "write_file", "patch_file", "read_file", "batch_file_operations",
     "create_directory", "list_directory", "run_command", "install_dependency",
+    "start_process", "read_process_output", "stop_process",
     "verify_code_syntax", "verify_webapp_endpoint", "web_search", "task_complete",
 ]
 PROTECTED_PATHS = [

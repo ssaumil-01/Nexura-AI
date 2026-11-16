@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
+from core.schemas import ProjectContext
 from tests.conftest import tool_call_msg
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,11 +22,6 @@ def g(monkeypatch, fake_llm, workspace):
     monkeypatch.setenv("CODER_MODEL_NAME", "gemini-test")
     monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
     import core.graph as cg
-    import tools.directory_tools as dt
-    import tools.file_tools as ft
-    import tools.system_tools as st
-    for m in (ft, dt, st):
-        monkeypatch.setattr(m, "WORKSPACE_PATH", str(workspace))
     monkeypatch.setattr(cg, "llm_with_tools", fake_llm)
     monkeypatch.setattr(cg, "planner_node", lambda s: {
         "plan": PLAN, "tasks": PLAN["steps"], "current_task_index": 0, "plan_feedback": None})
@@ -33,7 +29,7 @@ def g(monkeypatch, fake_llm, workspace):
 
     def run(interactive=False):
         graph = cg.build_graph(interactive=interactive)
-        cfg = {"configurable": {"thread_id": "t"}, "recursion_limit": 100}
+        cfg = {"configurable": {"thread_id": "t", "project": ProjectContext(run_id="t", root=workspace)}, "recursion_limit": 100}
         init = {"messages": [], "user_prompt": "x", "workspace_path": str(workspace), "plan": None,
                 "tasks": [], "current_task_index": 0, "execution_history": [],
                 "is_interactive": interactive, "plan_feedback": None, "tool_calls_count": 0}
@@ -103,7 +99,7 @@ def test_bug7_interactive_resumes(monkeypatch, g, fake_llm, workspace):
     fake_llm.script[:] = [tool_call_msg("create_file", {"target_file": "a.txt", "content": "x"}, "a")] + done(2)
     monkeypatch.setattr("builtins.input", lambda *_: "yes")
     graph = cg.build_graph(interactive=True)
-    cfg = {"configurable": {"thread_id": "t7"}, "recursion_limit": 100}
+    cfg = {"configurable": {"thread_id": "t7", "project": ProjectContext(run_id="t7", root=workspace)}, "recursion_limit": 100}
     init = {"messages": [], "user_prompt": "x", "workspace_path": str(workspace), "plan": None, "tasks": [],
             "current_task_index": 0, "execution_history": [], "is_interactive": True,
             "plan_feedback": None, "tool_calls_count": 0}

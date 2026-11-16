@@ -6,9 +6,7 @@ import config as nexura_config
 
 from langgraph.types import Command
 from core.graph import build_graph
-import tools.file_tools as ft
-import tools.system_tools as st
-import tools.directory_tools as dt
+from core.schemas import ProjectContext
 
 load_dotenv()
 
@@ -66,10 +64,7 @@ def main():
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
     os.makedirs(workspace_path, exist_ok=True)
     
-    # Set workspace path for all tool modules
-    ft.WORKSPACE_PATH = workspace_path
-    st.WORKSPACE_PATH = workspace_path
-    dt.WORKSPACE_PATH = workspace_path
+    project = ProjectContext(run_id=args.project, root=workspace_path)
     
     # Build the LangGraph pipeline
     graph = build_graph(interactive=args.interactive)
@@ -77,7 +72,7 @@ def main():
     # Thread config for checkpointing + LangSmith metadata
     mode_label = "interactive" if args.interactive else "autonomous"
     config = {
-        "configurable": {"thread_id": args.project},
+        "configurable": {"thread_id": args.project, "project": project},
         # LangSmith trace metadata — shows up in the dashboard
         "metadata": {
             "project": args.project,
@@ -103,7 +98,10 @@ def main():
     print(f"Nexura AI -- Starting project: {args.project}")
     print(f"Mode: {'Interactive (HITL)' if args.interactive else 'Autonomous'}\n")
     
-    run_graph(graph, initial_state, config)
+    try:
+        run_graph(graph, initial_state, config)
+    finally:
+        project.processes.stop_all()
     
     print("\n[OK] Pipeline complete!")
     print(f"\n---> LangSmith Traces: https://smith.langchain.com/o/default/projects/p/{args.project}")

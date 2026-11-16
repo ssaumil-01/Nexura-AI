@@ -11,9 +11,7 @@ from dotenv import load_dotenv
 
 from langgraph.types import Command
 from core.graph import build_graph
-import tools.file_tools as ft
-import tools.system_tools as st
-import tools.directory_tools as dt
+from core.schemas import ProjectContext
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -105,17 +103,13 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
     """Generator for streaming graph events using SSE."""
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
     
-    # Configure tools
-    ft.WORKSPACE_PATH = workspace_path
-    st.WORKSPACE_PATH = workspace_path
-    dt.WORKSPACE_PATH = workspace_path
-    
+    project = ProjectContext(run_id=project_id, root=workspace_path)
     if project_id not in checkpointers:
         checkpointers[project_id] = InMemorySaver()
     
     checkpointer = checkpointers[project_id]
     graph = build_graph(interactive=interactive, checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project": project}}
     
     if resume_input:
         # Resuming from an interrupt
@@ -197,6 +191,8 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
         import traceback
         print(traceback.format_exc())
         yield {"event": "error", "data": str(e)}
+    finally:
+        project.processes.stop_all()
 
 @app.get("/chat/stream")
 async def chat_stream(

@@ -10,13 +10,14 @@ from langgraph.types import interrupt, Command
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 from core.state import NexuraState
 from core.context_builder import ContextBuilder
 
 from tools.file_tools import create_file, write_file, read_file, patch_file, batch_file_operations
 from tools.directory_tools import create_directory, list_directory
-from tools.system_tools import run_command, install_dependency
+from tools.system_tools import run_command, install_dependency, start_process, read_process_output, stop_process
 from tools.signals import task_complete
 from tools.search_tools import web_search
 from tools.verification_tools import verify_code_syntax, verify_webapp_endpoint
@@ -32,7 +33,7 @@ MAX_LLM_RETRIES = 3
 
 all_tools = [create_file, write_file, read_file, patch_file, batch_file_operations,
              create_directory, list_directory,
-             run_command, install_dependency, task_complete,
+             run_command, install_dependency, start_process, read_process_output, stop_process, task_complete,
              web_search, verify_code_syntax, verify_webapp_endpoint]
 
 # ─── MODEL ──────────────────────────────────────────────────
@@ -124,7 +125,7 @@ def review_plan_node(state: NexuraState) -> Command:
         )
 
 
-def task_picker_node(state: NexuraState) -> dict:
+def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Picks the next task and builds the agent prompt with full context."""
     idx = state["current_task_index"]
     tasks = state["tasks"]
@@ -133,6 +134,7 @@ def task_picker_node(state: NexuraState) -> dict:
         return {"messages": []}  # No more tasks — will route to END
     
     task = tasks[idx]
+    config["configurable"]["project"].reset_task()  # fresh read-tracking, no stray processes
     
     # Build live workspace context
     context_builder = ContextBuilder(state["workspace_path"])
@@ -183,8 +185,8 @@ RECENT EXECUTION HISTORY
 RULES
 ========================
 1. RAW CONTENT: When writing code to files, provide the RAW code. Do NOT wrap it in markdown code blocks like ```python ... ```.
-2. POWERSHELL: All commands run via `run_command` must be valid Windows PowerShell.
-3. BATCHING: Prefer `batch_file_operations` over multiple individual `write_file` or `patch_file` calls.
+2. COMMANDS: `run_command` runs ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <). Servers go through `start_process`; installs through `install_dependency`.
+3. FILES: Use `create_file` for NEW files. To change an existing file, `read_file` it first, then `write_file` or `patch_file`. `batch_file_operations` follows the same rules.
 4. COMPLETION: Only call `task_complete` after you have verified the task is fully resolved.
 """
     
@@ -253,10 +255,11 @@ def increment_tool_count(state: NexuraState) -> dict:
     return {"tool_calls_count": state.get("tool_calls_count", 0) + 1}
 
 
-def advance_task_node(state: NexuraState) -> dict:
+def advance_task_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Marks the current task as done and advances to the next one."""
     idx = state["current_task_index"]
     task = state["tasks"][idx]
+    config["configurable"]["project"].reset_task()
     
     print(f"[Orchestrator] Task {task['step_id']} marked as completed.")
     
