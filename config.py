@@ -30,13 +30,15 @@ TEMPERATURE = 0.2
 ALLOWED_COMMANDS = ["python", "py", "pip", "node", "npm", "npx", "uvicorn", "pytest", "streamlit", "flask"]
 ALLOWED_ACTIONS = [
     "create_file", "write_file", "patch_file", "read_file", "batch_file_operations",
+    "delete_file", "rename_file",
     "create_directory", "list_directory", "run_command", "install_dependency",
     "start_process", "read_process_output", "stop_process",
     "verify_code_syntax", "verify_webapp_endpoint", "web_search", "task_complete",
 ]
 PROTECTED_PATHS = [
     ".git/", ".env*", ".vscode/", ".github/workflows/",
-    "package-lock.json", "yarn.lock", "poetry.lock", "*.pem", "*.key",
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock", "Cargo.lock", "composer.lock",
+    "*.pem", "*.key", "*.p12", "id_rsa*", "credentials*.json", "*.keystore",
 ]
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
@@ -67,6 +69,9 @@ def configure_observability() -> None:
         print("[Config] LangSmith tracing DISABLED (no LANGCHAIN_API_KEY found)")
 
 MAX_BATCH_OPS = 10
+RISK_MAX_FILES = 8        # more files than this in one task is "risky"
+RISK_MAX_LINES = 400      # more changed lines than this in one task is "risky"
+APPROVE_INSTALLS = True   # package installs always need approval
 
 # --- Data locations (the VS Code extension points NEXURA_DATA_DIR at its storage dir) ---
 from pathlib import Path  # noqa: E402

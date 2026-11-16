@@ -8,15 +8,17 @@ import time
 
 from core.safety import SafetyError, rel_path, resolve_in_root
 from core.schemas import Action, ExecResult, FileChange, ProjectContext
+from core.validator import MUTATING
 
 from tools.directory_tools import create_directory, list_directory
-from tools.file_tools import batch_file_operations, create_file, patch_file, read_file, write_file
+from tools.file_tools import batch_file_operations, create_file, delete_file, patch_file, read_file, rename_file, write_file
 from tools.search_tools import web_search
 from tools.signals import task_complete
 from tools.system_tools import install_dependency, read_process_output, run_command, start_process, stop_process
 from tools.verification_tools import verify_code_syntax, verify_webapp_endpoint
 
-TOOL_SCHEMAS = [create_file, write_file, read_file, patch_file, batch_file_operations, create_directory, list_directory,
+TOOL_SCHEMAS = [create_file, write_file, read_file, patch_file, batch_file_operations, delete_file, rename_file,
+                create_directory, list_directory,
                 run_command, install_dependency, start_process, read_process_output, stop_process, task_complete,
                 web_search, verify_code_syntax, verify_webapp_endpoint]
 TOOLS_BY_NAME = {t.name: t for t in TOOL_SCHEMAS}
@@ -42,6 +44,10 @@ def action_from_tool_call(name: str, args: dict) -> Action:
         return Action(action=name, path=get("target_dir", "."))
     if name == "batch_file_operations":
         return Action(action=name, metadata={"operations": get("operations")})
+    if name == "delete_file":
+        return Action(action=name, path=get("target_file"))
+    if name == "rename_file":
+        return Action(action=name, path=get("source_file"), metadata={"destination": get("destination_file")})
     if name in ("run_command", "install_dependency", "start_process"):
         return Action(action=name, command=get("command"))
     if name in ("read_process_output", "stop_process"):
@@ -67,6 +73,8 @@ def _tool_args(a: Action) -> dict:
         "create_directory": lambda: {"target_dir": a.path},
         "list_directory": lambda: {"target_dir": a.path or "."},
         "batch_file_operations": lambda: {"operations": m.get("operations")},
+        "delete_file": lambda: {"target_file": a.path},
+        "rename_file": lambda: {"source_file": a.path, "destination_file": m.get("destination")},
         "run_command": lambda: {"command": a.command},
         "install_dependency": lambda: {"command": a.command},
         "start_process": lambda: {"command": a.command},
@@ -92,8 +100,10 @@ def _sha(path) -> str | None:
 def _write_targets(a: Action, ctx: ProjectContext) -> list[str]:
     if a.action == "batch_file_operations":
         paths = [o.get("target_file") for o in (a.metadata.get("operations") or []) if isinstance(o, dict)]
-    elif a.action in ("create_file", "write_file", "patch_file"):
+    elif a.action in ("create_file", "write_file", "patch_file", "delete_file"):
         paths = [a.path]
+    elif a.action == "rename_file":
+        paths = [a.path, a.metadata.get("destination")]
     else:
         return []
     out = []
@@ -141,6 +151,8 @@ def run(action: Action, ctx: ProjectContext, task_id: int = 0) -> ExecResult:
     """Execute one (already validated) Action. Never raises."""
     t0 = time.monotonic()
     try:
+        if not ctx.trusted and action.action in MUTATING:   # defence in depth: the validator already rejects these
+            return ExecResult(ok=False, code="UNTRUSTED_WORKSPACE", stderr="This workspace is not trusted.")
         if action.action == "file_exists":
             ok = resolve_in_root(ctx.root, action.path or "").is_file()
             return ExecResult(ok=ok, code=None if ok else "FILE_NOT_FOUND", stdout=action.path or "",
@@ -160,7 +172,7 @@ def run(action: Action, ctx: ProjectContext, task_id: int = 0) -> ExecResult:
             after = _sha(t)
             if after != before[t]:
                 res.file_changes.append(FileChange(
-                    file=rel_path(ctx.root, t), change_type="created" if before[t] is None else "modified",
+                    file=rel_path(ctx.root, t), change_type="deleted" if after is None else "created" if before[t] is None else "modified",
                     task_id=task_id, sha256_before=before[t], sha256_after=after))
         res.duration_ms = int((time.monotonic() - t0) * 1000)
         return res

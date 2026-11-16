@@ -46,7 +46,7 @@ def env(tmp_path, monkeypatch, fake_llm, workspace):
 def run_new(env, script):
     from core.runner import initial_state  # noqa: F401
     env.llm.script[:] = script
-    ctx, state = start_run(env.sm, "proj", env.ws, "make a.txt")
+    ctx, state = start_run(env.sm, "proj", env.ws, "make a.txt", require_git=False)
     graph = env.build(checkpointer=make_checkpointer(env.ckpt_path))
     cfg = {"configurable": {"thread_id": ctx.run_id, "project": ctx}, "recursion_limit": 200}
     graph.invoke(state, cfg)
@@ -63,8 +63,8 @@ SECOND = [tool_call_msg("task_complete", {"summary": "ok"}, "c3")]
 
 def test_schema_version_and_round_trip(tmp_path):
     sm = StateManager(tmp_path / "x.db")
-    assert sm.schema_version() == 1
-    assert StateManager(tmp_path / "x.db").schema_version() == 1  # re-open: no re-migration
+    assert sm.schema_version() == 2
+    assert StateManager(tmp_path / "x.db").schema_version() == 2  # re-open: no re-migration
     sm.upsert_project("p", "/w")
     sm.create_run("r1", "p", "prompt", "ask_risky")
     sm.save_plan("r1", PLAN, load_tasks(PLAN))
@@ -154,7 +154,7 @@ def test_kill_mid_run_then_resume_continues_from_first_unfinished_task(env):
 
     env.llm.script[:] = list(SECOND)
     env.llm.calls.clear()
-    ctx2, state = prepare_resume(env.sm, ctx.run_id)
+    ctx2, state = prepare_resume(env.sm, ctx.run_id, require_git=False)
     assert state["current_task_index"] == 1 and state["task_status"] == {"1": "done", "2": "pending"} and state["resuming"]
     graph2 = env.build(checkpointer=make_checkpointer(env.ckpt_path))
     cfg2 = {"configurable": {"thread_id": "resume-1", "project": ctx2}, "recursion_limit": 200}
@@ -170,11 +170,11 @@ def test_kill_mid_run_then_resume_continues_from_first_unfinished_task(env):
 
 def test_resume_errors(env, tmp_path):
     with pytest.raises(ResumeError, match="No such run"):
-        prepare_resume(env.sm, "nope")
+        prepare_resume(env.sm, "nope", require_git=False)
     ctx, graph, cfg = run_new(env, FIRST + SECOND)
     graph.invoke(Command(resume="yes"), cfg)
     with pytest.raises(ResumeError, match="no unfinished"):
-        prepare_resume(env.sm, ctx.run_id)
+        prepare_resume(env.sm, ctx.run_id, require_git=False)
     env.sm.create_run("noplan", "proj", "x")
     with pytest.raises(ResumeError, match="no saved plan"):
         prepare_resume(env.sm, "noplan")
@@ -186,7 +186,7 @@ def test_failed_task_is_retried_on_resume_with_fresh_attempts(env):
     graph.invoke(Command(resume="yes"), cfg)
     assert env.sm.get_run(ctx.run_id).status == "failed"
     assert env.sm.list_tasks(ctx.run_id)[0]["reason"].startswith("TOOL_CAP")
-    ctx2, state = prepare_resume(env.sm, ctx.run_id)
+    ctx2, state = prepare_resume(env.sm, ctx.run_id, require_git=False)
     assert state["task_status"] == {"1": "pending", "2": "pending"} and env.sm.list_tasks(ctx.run_id)[0]["attempts"] == 0
 
 

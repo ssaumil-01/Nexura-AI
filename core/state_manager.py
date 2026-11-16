@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from core.schemas import FileChange, TaskRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS = {
     1: """
@@ -32,7 +32,14 @@ MIGRATIONS = {
     CREATE INDEX idx_events_run ON events(run_id, id);
     CREATE INDEX idx_changes_run ON file_changes(run_id, task_id);
     """,
+    2: """
+    CREATE TABLE locks (workspace TEXT PRIMARY KEY, run_id TEXT NOT NULL, pid INTEGER NOT NULL, ts REAL NOT NULL);
+    """,
 }
+
+
+class WorkspaceBusy(RuntimeError):
+    """Another run is active on this workspace."""
 
 RUN_STATUSES = ("running", "completed", "completed_with_failures", "failed", "cancelled")
 
@@ -106,6 +113,8 @@ class StateManager:
         if status is not None and status not in RUN_STATUSES:
             raise ValueError(f"bad run status {status!r}")
         done = status in ("completed", "completed_with_failures", "failed", "cancelled")
+        if done:
+            self._exec("DELETE FROM locks WHERE run_id=?", (run_id,))
         self._exec("UPDATE runs SET status=COALESCE(?, status), error=COALESCE(?, error), "
                    "finished_at=CASE WHEN ? THEN ? ELSE finished_at END WHERE id=?",
                    (status, error, 1 if done else 0, time.time(), run_id))
@@ -183,3 +192,34 @@ def _reopen(self, run_id: str) -> None:
 
 
 StateManager.reopen_run = _reopen
+
+
+def _norm(workspace) -> str:
+    import os
+    return os.path.normcase(os.path.realpath(str(workspace)))
+
+
+def _acquire(self, workspace, run_id: str) -> None:
+    """One active run per workspace. A lock whose process is gone (crash) is stale and is taken over."""
+    import os
+    import psutil
+    key = _norm(workspace)
+    with self._lock, closing(self._conn()) as c:
+        row = c.execute("SELECT run_id, pid FROM locks WHERE workspace=?", (key,)).fetchone()
+        if row and row["run_id"] != run_id and row["pid"] != os.getpid() and psutil.pid_exists(row["pid"]):
+            raise WorkspaceBusy(f"Run {row['run_id']} is already active on this workspace (pid {row['pid']}).")
+        if row and row["run_id"] != run_id and row["pid"] == os.getpid():
+            st = c.execute("SELECT status FROM runs WHERE id=?", (row["run_id"],)).fetchone()
+            if st and st["status"] == "running":
+                raise WorkspaceBusy(f"Run {row['run_id']} is already active on this workspace.")
+        c.execute("INSERT OR REPLACE INTO locks (workspace, run_id, pid, ts) VALUES (?,?,?,?)",
+                  (key, run_id, os.getpid(), time.time()))
+        c.commit()
+
+
+def _release(self, run_id: str) -> None:
+    self._exec("DELETE FROM locks WHERE run_id=?", (run_id,))
+
+
+StateManager.acquire_lock = _acquire
+StateManager.release_lock = _release

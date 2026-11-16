@@ -3,7 +3,8 @@
 plan -> review_plan -> task_picker -> coder -> validate -> [approval] -> execute -> (loop | verify)
 verify: pass -> advance_task | fail -> retry_manager -> debugger -> validate -> execute -> verify | exhausted -> advance_task(failed)
 """
-import time
+import hashlib
+from pathlib import Path
 from typing import Any
 
 from langgraph.graph import StateGraph, START, END
@@ -16,8 +17,9 @@ from langchain_core.runnables import RunnableConfig
 import config as app_config
 from agents import coder, debugger
 from core import execution_manager as em
-from core import retry_manager, validator, verification
+from core import approvals, checkpoints, retry_manager, validator, verification
 from core.context_builder import build_context
+from core.safety import SafetyError, redact_secrets, resolve_in_root
 from core.schemas import Action
 from core.state import NexuraState
 from core.task_manager import final_run_status, load_tasks, pick_next, render_plan_md
@@ -158,9 +160,14 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
     if ctx.state_manager is not None:
         ctx.state_manager.mark_task(ctx.run_id, task["step_id"], "running")
     ctx.emit("task_started", task["step_id"], title=task["title"])
+    if ctx.git_checkpoints:   # pre-task snapshot: what undo restores
+        try:
+            checkpoints.snapshot(ctx.root, ctx.run_id, task["step_id"])
+        except checkpoints.GitError as e:
+            return {**_fail(f"CHECKPOINT_FAILED: {e.message}"), "task_status": {**(state.get("task_status") or {}), str(task["step_id"]): "running"}}
 
     run_changed = [fc["file"] for fc in state.get("file_changes", [])]
-    workspace_context, breakdown = build_context(task, ctx.root, run_changed)
+    workspace_context, breakdown = build_context(task, ctx.root, run_changed, redact=redact_secrets)
     print(f"  [Context] {breakdown}")
 
     history_summary = "No previous executions yet."
@@ -178,7 +185,8 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
     return {
         # remove ALL previous messages (the add_messages reducer ignores a bare []), then start fresh
         "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(content=prompt)],
-        "task_status": status, "tool_calls_count": 0, "attempts": 0, "mode": "code", "pending": [],
+        "task_status": status, "tool_calls_count": 0, "attempts": 0, "mode": "code", "pending": [], "task_lines": 0,
+        "approvals_rejected": 0,
         "changed_files": [], "command_results": [], "verify_failure": None, "retry_hint": "",
         "task_outcome": None, "task_reason": None,
     }
@@ -243,11 +251,37 @@ def route_after_agent(state: NexuraState) -> str:
 
 # ─── VALIDATE -> (APPROVAL) -> EXECUTE ──────────────────────
 
+def _sha_file(path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _conflicts(ctx, previews: list[dict]) -> list[str]:
+    """Files the user changed behind our back since Nexura last read/wrote them."""
+    out = []
+    for p in previews:
+        if p["change_type"] == "created":
+            continue
+        try:
+            full = resolve_in_root(ctx.root, p["file"])
+        except SafetyError:
+            continue
+        key = ctx.key(full)
+        known = ctx.known_hashes.get(key)
+        if key in ctx.external_edits or (known is not None and _sha_file(full) != known):
+            out.append(p["file"])
+    return out
+
+
 def validate_node(state: NexuraState, config: RunnableConfig) -> dict:
-    """Every proposed call becomes an Action and must pass the validator before anything runs."""
-    ctx, task, mode = config["configurable"]["project"], _cur(state), state.get("mode", "code")
+    """Every proposed call becomes an Action and must pass the validator before anything runs.
+    Valid actions are previewed (diffs) and risk-assessed; the ones that need approval carry their reasons."""
+    ctx, task, mode = _ctx(config), _cur(state), state.get("mode", "code")
     calls = state["messages"][-1].tool_calls
     msgs, pending, hist, rejected, last_reject, skip_rest = [], [], [], 0, "", False
+    files_in_task, lines_in_task = set(state.get("changed_files", [])), state.get("task_lines", 0)
 
     for tc in calls:
         if skip_rest:
@@ -255,14 +289,22 @@ def validate_node(state: NexuraState, config: RunnableConfig) -> dict:
             continue
         action = em.action_from_tool_call(tc["name"], tc["args"])
         r = validator.validate(action, ctx, mode)
-        if not r.ok:
+        if not r.ok and r.code != "APPROVAL_REQUIRED":   # protected paths are not refused: they need the user's approval
             rejected += 1
             last_reject = f"{r.code}: {r.message}"
             ctx.emit("validation_rejected", task["step_id"], code=r.code, tool=tc["name"])
             msgs.append(_tool_msg(f"ERROR: {r.code}: {r.message}", tc, True))
             hist.append(_hist(task, tc["name"], tc["args"], last_reject, "rejected"))
             continue
-        pending.append({"id": tc["id"], "name": tc["name"], "args": tc["args"], "action": action.model_dump()})
+        previews = approvals.preview(action, ctx)
+        reasons = approvals.assess(action, previews, ctx, files_in_task, lines_in_task, _conflicts(ctx, previews))
+        ask = approvals.requires_approval(reasons, ctx.approval_level)
+        lines = sum(p["lines"] for p in previews)
+        files_in_task |= {p["file"] for p in previews}
+        lines_in_task += lines
+        pending.append({"id": tc["id"], "name": tc["name"], "args": tc["args"], "action": action.model_dump(),
+                        "preview": previews, "reasons": ask, "lines": lines,
+                        "protected": any(t.startswith("protected path") for _, t in reasons)})
         skip_rest = tc["name"] == "task_complete"
 
     count = state.get("tool_calls_count", 0) + rejected
@@ -279,25 +321,40 @@ def validate_node(state: NexuraState, config: RunnableConfig) -> dict:
 def route_after_validate(state: NexuraState) -> str:
     if state.get("task_outcome"):
         return "advance_task"
-    if not state.get("pending"):
+    pending = state.get("pending")
+    if not pending:
         return "debugger" if state.get("mode") == "debug" else "coder"
-    return "approval" if state.get("is_interactive") else "execute"
+    return "approval" if state.get("is_interactive") or any(p.get("reasons") for p in pending) else "execute"
 
 
-def approval_node(state: NexuraState) -> Command:
-    """Interactive mode: show the validated calls and wait for approve/reject."""
-    task, pending = _cur(state), state["pending"]
-    decision = interrupt({"type": "tool_approval", "task_id": task["step_id"],
-                          "calls": [{"name": p["name"], "args": p["args"]} for p in pending]})
-    if str(decision).strip().lower() in ("yes", "y", "approve"):
-        return Command(goto="execute")
+def approval_node(state: NexuraState, config: RunnableConfig) -> Command:
+    """Ask the user (interactive mode, or the risk gate). Payload: {type, task_id, files, diffs, reason, calls}."""
+    ctx, task, pending = _ctx(config), _cur(state), state["pending"]
+    reasons = [r for p in pending for r in p.get("reasons", [])]
+    diffs = [d for p in pending for d in p.get("preview", [])]
+    decision = interrupt({
+        "type": "approval" if reasons else "tool_approval",
+        "task_id": task["step_id"],
+        "reason": "; ".join(dict.fromkeys(reasons)) or "interactive mode: approve every tool call",
+        "files": sorted({d["file"] for d in diffs}),
+        "diffs": diffs,
+        "calls": [{"name": p["name"], "args": p["args"]} for p in pending],
+    })
+    approved, note = approvals.parse_decision(decision)
+    ctx.emit("approval_decision", task["step_id"], approved=approved, note=note, reasons=reasons)
+    if approved:
+        return Command(goto="execute", update={"pending": [{**p, "approved_by": "user"} for p in pending]})
 
     count = state.get("tool_calls_count", 0) + len(pending)
+    rejects = state.get("approvals_rejected", 0) + 1
     update = {
-        "messages": [_tool_msg(f"REJECTED by user: {decision}", p, True) for p in pending],
-        "pending": [], "tool_calls_count": count,
+        "messages": [_tool_msg(f"REJECTED by user: {note or 'no reason given'}", p, True) for p in pending],
+        "pending": [], "tool_calls_count": count, "approvals_rejected": rejects,
         "execution_history": state["execution_history"] + [_hist(task, p["name"], p["args"], "rejected by user", "rejected") for p in pending],
     }
+    if rejects >= app_config.MAX_RETRIES:
+        update.update(_fail("APPROVAL_REJECTED: the user rejected the proposed changes repeatedly"))
+        return Command(goto="advance_task", update=update)
     if count >= app_config.MAX_TOOL_CALLS_PER_TASK:
         update.update(_fail("TOOL_CAP: too many rejected/failed tool calls"))
         return Command(goto="advance_task", update=update)
@@ -305,25 +362,49 @@ def approval_node(state: NexuraState) -> Command:
 
 
 def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
-    """Runs validated actions through the execution manager (the only place tools are called)."""
-    ctx, task = config["configurable"]["project"], _cur(state)
+    """Runs validated (and, where needed, approved) actions through the execution manager: the only place tools are called."""
+    ctx, task = _ctx(config), _cur(state)
     count = state.get("tool_calls_count", 0)
     msgs, hist, changes = [], [], []
     changed = list(state.get("changed_files", []))
     commands = list(state.get("command_results", []))
-    completed = False
+    lines, completed = state.get("task_lines", 0), False
 
     for p in state["pending"]:
         action = Action(**p["action"])
-        res = em.run(action, ctx, task_id=task["step_id"])
+        source = p.get("approved_by", "auto")
+        ctx.allow_protected = bool(p.get("protected") and source == "user")   # only for an action the user approved
+        try:
+            res = em.run(action, ctx, task_id=task["step_id"])
+        finally:
+            ctx.allow_protected = False
         count += 1
+        lines += p.get("lines", 0)
         text = res.text()
-        msgs.append(_tool_msg(text, p, not res.ok))
-        hist.append(_hist(task, p["name"], p["args"], text, "ok" if res.ok else "error"))
+        safe = redact_secrets(text)
+        if safe != text:
+            ctx.emit("secret_redacted", task["step_id"], tool=p["name"])
+        msgs.append(_tool_msg(safe, p, not res.ok))
+        hist.append(_hist(task, p["name"], p["args"], safe, "ok" if res.ok else "error"))
         ctx.emit("tool_call", task["step_id"], agent="executor", tool=p["name"], ok=res.ok, code=res.code)
+        if action.action == "read_file" and res.ok and action.path:
+            try:
+                full = resolve_in_root(ctx.root, action.path)
+                ctx.known_hashes[ctx.key(full)] = _sha_file(full) or ""
+            except SafetyError:
+                pass
         for fc in res.file_changes:
             if ctx.state_manager is not None:
-                ctx.state_manager.add_file_change(ctx.run_id, fc, "auto")
+                ctx.state_manager.add_file_change(ctx.run_id, fc, source)
+            if ctx.logger is not None:   # edit audit log
+                ctx.logger.log(agent="audit", task_id=task["step_id"], result="file_edit",
+                               output_summary=f"{fc.file} {fc.change_type} before={str(fc.sha256_before)[:12]} after={str(fc.sha256_after)[:12]} approval={source}")
+            key = ctx.key(ctx.root / fc.file)
+            ctx.external_edits.discard(key)
+            if fc.sha256_after:
+                ctx.known_hashes[key] = fc.sha256_after
+            else:
+                ctx.known_hashes.pop(key, None)
             changes.append(fc.model_dump())
             if fc.file not in changed:
                 changed.append(fc.file)
@@ -332,7 +413,7 @@ def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
         if action.action == "task_complete":
             completed = True
 
-    update = {"messages": msgs, "pending": [], "tool_calls_count": count, "changed_files": changed,
+    update = {"messages": msgs, "pending": [], "tool_calls_count": count, "changed_files": changed, "task_lines": lines,
               "command_results": commands, "file_changes": state.get("file_changes", []) + changes,
               "execution_history": state["execution_history"] + hist,
               "want_verify": completed or state.get("mode") == "debug"}
@@ -422,7 +503,7 @@ def should_continue(state: NexuraState) -> str:
     if state["current_task_index"] >= len(state["tasks"]):
         print(f"\n[Orchestrator] Run finished: {state.get('run_status')}")
         return "end"
-    return "continue"
+    return "advance" if state.get("task_outcome") else "continue"
 
 
 # ─── GRAPH ASSEMBLY ─────────────────────────────────────────
@@ -439,7 +520,7 @@ def build_graph(interactive: bool = False, checkpointer: Any = None):
     b.add_conditional_edges(START, route_start, {"planner": "planner", "task_picker": "task_picker"})
     b.add_conditional_edges("planner", route_after_planner, {"review_plan": "review_plan", END: END})
     # review_plan, approval: Command(goto=...)
-    b.add_conditional_edges("task_picker", should_continue, {"continue": "coder", "end": END})
+    b.add_conditional_edges("task_picker", should_continue, {"continue": "coder", "end": END, "advance": "advance_task"})
     agent_routes = {"validate": "validate", "advance_task": "advance_task", "coder": "coder", "debugger": "debugger"}
     b.add_conditional_edges("coder", route_after_agent, agent_routes)
     b.add_conditional_edges("debugger", route_after_agent, agent_routes)

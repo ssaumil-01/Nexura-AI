@@ -199,9 +199,9 @@ DEFAULT_IGNORED = ["plan.json", "plan.md", "node_modules/", "__pycache__/", ".gi
                    "*.gif", "*.ico", "*.webp", "*.woff", "*.woff2", "*.ttf", "*.pdf", "*.db", "*.sqlite"]
 
 
-def load_ignore_patterns(root: Path | str) -> list[str]:
+def load_ignore_patterns(root: Path | str, include_defaults: bool = True) -> list[str]:
     """Defaults + .gitignore + .nexuraignore. shortcut: no negation (!) or anchored-path semantics; upgrade if users need them."""
-    pats = list(DEFAULT_IGNORED)
+    pats = list(DEFAULT_IGNORED) if include_defaults else []
     for name in (".gitignore", ".nexuraignore"):
         try:
             for line in (Path(root) / name).read_text(encoding="utf-8", errors="ignore").splitlines():

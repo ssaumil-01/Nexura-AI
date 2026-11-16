@@ -2,16 +2,19 @@
 import os
 
 import config
-from core.safety import SafetyError, check_writable, parse_command, resolve_in_root
+from core.safety import SafetyError, check_writable, is_ignored, parse_command, resolve_in_root, NEVER_IN_CONTEXT
 from core.schemas import Action, ProjectContext, ValidationResult
 
 OK = ValidationResult(ok=True)
 
-WRITE_ACTIONS = {"create_file", "write_file", "patch_file", "batch_file_operations"}
+RBW_ACTIONS = {"create_file", "write_file", "patch_file", "batch_file_operations"}   # read-before-write rules apply
+WRITE_ACTIONS = RBW_ACTIONS | {"delete_file", "rename_file"}
+MUTATING = WRITE_ACTIONS | {"create_directory", "run_command", "install_dependency", "start_process"}
 # action -> required (field | metadata key)
 REQUIRED = {
     "create_file": ["path", "content"], "write_file": ["path", "content"],
     "patch_file": ["path", "search_text", "replace_text"], "read_file": ["path"],
+    "delete_file": ["path"], "rename_file": ["path", "m:destination"],
     "create_directory": ["path"], "list_directory": [],
     "batch_file_operations": ["m:operations"],
     "run_command": ["command"], "install_dependency": ["command"], "start_process": ["command"],
@@ -58,6 +61,8 @@ def validate_allowed_action(action: Action, mode: str = "code") -> ValidationRes
 def _paths(action: Action) -> list[str]:
     if action.action == "batch_file_operations":
         return [str(o.get("target_file")) for o in _ops(action) if isinstance(o, dict)]
+    if action.action == "rename_file":
+        return [action.path, str(action.metadata.get("destination"))]
     return [action.path] if action.path is not None else []
 
 
@@ -96,7 +101,7 @@ def validate_task_alignment(action: Action, ctx: ProjectContext, mode: str = "co
 
 
 def validate_read_before_write(action: Action, ctx: ProjectContext) -> ValidationResult:
-    if action.action not in WRITE_ACTIONS:
+    if action.action not in RBW_ACTIONS:
         return OK
     ops = _ops(action) if action.action == "batch_file_operations" else [
         {"operation": {"create_file": "create", "write_file": "write", "patch_file": "patch"}[action.action], "target_file": action.path}]
@@ -147,14 +152,54 @@ def validate_protected_path(action: Action, ctx: ProjectContext) -> ValidationRe
     return OK
 
 
+def validate_trusted(action: Action, ctx: ProjectContext) -> ValidationResult:
+    if not ctx.trusted and action.action in MUTATING:
+        return fail("UNTRUSTED_WORKSPACE", "This workspace is not trusted; Nexura may only read files.")
+    return OK
+
+
+def validate_dirty_files(action: Action, ctx: ProjectContext) -> ValidationResult:
+    """Never touch files the user has uncommitted/unsaved changes in."""
+    if action.action not in WRITE_ACTIONS or not ctx.dirty_files:
+        return OK
+    dirty = {d.replace("\\", "/").lower() for d in ctx.dirty_files}
+    for p in _paths(action):
+        try:
+            key = ctx.key(resolve_in_root(ctx.root, p))
+        except SafetyError:
+            continue
+        if key.lower() in dirty:
+            return fail("DIRTY_FILE", f"{p} has unsaved or uncommitted changes of yours; Nexura will not touch it.")
+    return OK
+
+
+def validate_ignored(action: Action, ctx: ProjectContext) -> ValidationResult:
+    """Secrets/ignored files are never read into the model context, and ignored files are not edited."""
+    if action.action not in ("read_file", "verify_code_syntax") and action.action not in WRITE_ACTIONS:
+        return OK
+    for p in _paths(action):
+        try:
+            key = ctx.key(resolve_in_root(ctx.root, p))
+        except SafetyError:
+            continue
+        if is_ignored(key, NEVER_IN_CONTEXT) and action.action in ("read_file", "verify_code_syntax"):
+            return fail("SECRET_FILE", f"{p} may contain secrets and cannot be read.")
+        if ctx.ignore_patterns and is_ignored(key, ctx.ignore_patterns):
+            return fail("IGNORED_PATH", f"{p} is excluded by .gitignore/.nexuraignore.")
+    return OK
+
+
 def validate(action: Action, ctx: ProjectContext, mode: str = "code") -> ValidationResult:
     """Run every check; the first failure wins."""
     checks = [
         lambda: validate_schema(action),
         lambda: validate_allowed_action(action, mode),
+        lambda: validate_trusted(action, ctx),
         lambda: validate_single_file(action),
         lambda: validate_path(action, ctx),
         lambda: validate_task_alignment(action, ctx, mode),
+        lambda: validate_dirty_files(action, ctx),
+        lambda: validate_ignored(action, ctx),
         lambda: validate_read_before_write(action, ctx),
         lambda: validate_command(action, ctx),
         lambda: validate_protected_path(action, ctx),

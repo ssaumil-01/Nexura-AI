@@ -10,8 +10,10 @@ import config as nexura_config
 from langgraph.types import Command
 from core import metrics
 from core.orchestrator import build_graph
-from core.runner import ResumeError, prepare_resume, start_run
-from core.state_manager import StateManager, make_checkpointer
+from core import runner
+from core.checkpoints import GitError
+from core.runner import DirtyWorkspace, ResumeError, prepare_resume, start_run
+from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 from core.task_manager import run_summary
 
 load_dotenv()
@@ -36,10 +38,12 @@ def run_graph(graph, initial_state, config):
         # There's a pending interrupt — check what it is
         if snapshot.tasks and snapshot.tasks[0].interrupts:
             interrupt_value = snapshot.tasks[0].interrupts[0].value
-            if isinstance(interrupt_value, dict):  # tool approval request
-                print(f"\n>> Task {interrupt_value.get('task_id')} wants to run:")
+            if isinstance(interrupt_value, dict):  # approval request (interactive mode or risk gate)
+                print(f"\n>> Task {interrupt_value.get('task_id')}: approval needed - {interrupt_value.get('reason')}")
                 for c in interrupt_value.get("calls", []):
                     print(f"   - {c['name']}({json.dumps(c['args'], default=str)[:300]})")
+                for d in interrupt_value.get("diffs", []):
+                    print(f"   --- {d['change_type']}: {d['file']}\n{d['diff'][:1500]}")
                 print(">> Type 'yes' to approve; anything else rejects it and is sent to the agent as feedback:")
             else:
                 print(f"\n>> {interrupt_value}")
@@ -85,6 +89,14 @@ def main():
     parser.add_argument("--project", type=str, help="Project name (e.g., 'proj_test')")
     parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop mode")
     parser.add_argument("--resume", metavar="RUN_ID", help="Resume an unfinished run (done tasks are kept)")
+    parser.add_argument("--approval", choices=["ask_every_edit", "ask_risky", "auto_within_limits"],
+                        help="When to ask before editing (default: ask_risky)")
+    parser.add_argument("--git-init", action="store_true", help="Initialize git in the workspace if it is not a repository")
+    parser.add_argument("--dirty-policy", choices=["checkpoint", "abort"], default="checkpoint",
+                        help="What to do if the workspace has uncommitted changes")
+    parser.add_argument("--undo", metavar="RUN_ID", help="Undo a run's changes (all of them, or one task with --task)")
+    parser.add_argument("--task", type=int, help="With --undo: only this task")
+    parser.add_argument("--confirm", action="store_true", help="With --undo: overwrite files you edited since the run")
     parser.add_argument("--metrics", metavar="RUN_ID", help="Print metrics for a run and exit")
 
     args = parser.parse_args()
@@ -94,6 +106,16 @@ def main():
     if args.metrics:
         print(json.dumps(metrics.compute(sm, args.metrics), indent=2))
         return
+    if args.undo:
+        res = runner.undo(sm, args.undo, args.task, args.confirm)
+        if res.error:
+            print(f"Undo failed: {res.error}")
+        elif not res.applied:
+            print("Not undone: these files were edited after Nexura changed them (use --confirm to overwrite):")
+            print("\n".join(f"  {f}" for f in res.conflicts))
+        else:
+            print(f"Undone. restored={res.restored} deleted={res.deleted}")
+        sys.exit(0 if res.applied else 1)
     if not args.resume and not (args.prompt and args.project):
         parser.error("--prompt and --project are required (unless using --resume or --metrics)")
 
@@ -103,10 +125,14 @@ def main():
             thread_id = f"{project.run_id}-r{int(time.time())}"
         else:
             workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
-            project, initial_state = start_run(sm, args.project, workspace_path, args.prompt, interactive=args.interactive)
+            project, initial_state = start_run(sm, args.project, workspace_path, args.prompt, interactive=args.interactive,
+                                               approval_level=args.approval, git_init=args.git_init, dirty_policy=args.dirty_policy)
             thread_id = project.run_id
-    except ResumeError as e:
-        print(f"Cannot resume: {e}")
+    except (ResumeError, WorkspaceBusy, DirtyWorkspace) as e:
+        print(f"Cannot start: {e}")
+        sys.exit(2)
+    except GitError as e:
+        print(f"Cannot start: {e.message}" + ("\nRe-run with --git-init to create a repository here." if e.code == "NOT_A_REPO" else ""))
         sys.exit(2)
 
     graph = build_graph(interactive=args.interactive, checkpointer=make_checkpointer(nexura_config.CHECKPOINT_DB_PATH))

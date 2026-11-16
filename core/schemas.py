@@ -27,7 +27,10 @@ class ProjectContext(BaseModel):
     approval_level: str = config.APPROVAL_LEVEL
     protected_paths: list[str] = Field(default_factory=lambda: list(config.PROTECTED_PATHS))
     ignore_patterns: list[str] = Field(default_factory=list)
-    allow_protected: bool = False  # set only after explicit approval (Phase 5)
+    allow_protected: bool = False  # set only while executing an action the user explicitly approved
+    trusted: bool = True           # False (untrusted VS Code workspace): every mutating action is rejected
+    dirty_files: set[str] = Field(default_factory=set)   # files with unsaved/uncommitted user changes: never touched
+    git_checkpoints: bool = False  # take a git checkpoint before each task (set by the runner)
 
     # persistence (all optional so tools/tests work without them)
     project_id: Optional[str] = None
@@ -37,6 +40,8 @@ class ProjectContext(BaseModel):
 
     # runtime state (not serialised)
     files_read: set[str] = Field(default_factory=set, exclude=True)
+    known_hashes: dict[str, str] = Field(default_factory=dict, exclude=True)   # key -> sha256 Nexura last saw/wrote
+    external_edits: set[str] = Field(default_factory=set, exclude=True)        # keys the user edited during the run
     processes: Any = Field(default_factory=ProcessManager, exclude=True)
 
     def emit(self, type: str, task_id: int | None = None, agent: str = "orchestrator", **data) -> None:

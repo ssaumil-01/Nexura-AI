@@ -152,3 +152,39 @@ def batch_file_operations(operations: list[dict], config: RunnableConfig) -> str
             res["code"], res["message"] = e.code, e.message
         results.append(res)
     return json.dumps(results)
+
+
+@tool
+def delete_file(target_file: str, config: RunnableConfig) -> str:
+    """Deletes a file from the workspace (a risky action: the user is asked to approve it). Files only, never directories."""
+    ctx = get_project(config)
+    try:
+        full, key = _target(ctx, target_file, True)
+        if not os.path.isfile(full):
+            raise SafetyError("FILE_NOT_FOUND", f"File not found: {target_file}")
+        os.remove(full)
+    except SafetyError as e:
+        return err(e.code, e.message)
+    ctx.files_read.discard(key)
+    return f"Successfully deleted file: {target_file}"
+
+
+@tool
+def rename_file(source_file: str, destination_file: str, config: RunnableConfig) -> str:
+    """Renames/moves a file inside the workspace (a risky action: the user is asked to approve it)."""
+    ctx = get_project(config)
+    try:
+        src, skey = _target(ctx, source_file, True)
+        dst, dkey = _target(ctx, destination_file, True)
+        if not os.path.isfile(src):
+            raise SafetyError("FILE_NOT_FOUND", f"File not found: {source_file}")
+        if os.path.exists(dst):
+            raise SafetyError("FILE_EXISTS", f"{destination_file} already exists.")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.rename(src, dst)
+    except SafetyError as e:
+        return err(e.code, e.message)
+    if skey in ctx.files_read:
+        ctx.files_read.discard(skey)
+        ctx.files_read.add(dkey)
+    return f"Successfully renamed {source_file} -> {destination_file}"

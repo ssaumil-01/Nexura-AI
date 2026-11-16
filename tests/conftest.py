@@ -29,6 +29,8 @@ class FakeChatModel(BaseChatModel):
         if not self.script:
             raise AssertionError("FakeChatModel script exhausted")
         item = self.script.pop(0)
+        if callable(item):  # lets a test run a side effect (e.g. an external edit) at this point of the script
+            item = item()
         if isinstance(item, BaseException):
             raise item
         return ChatResult(generations=[ChatGeneration(message=item)])

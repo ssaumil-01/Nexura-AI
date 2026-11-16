@@ -67,3 +67,5 @@ class NexuraState(TypedDict):
     want_verify: bool
     last_rejection: Optional[str]
     resuming: bool                   # True when a run is resumed: skip planning/review
+    task_lines: int                  # changed lines so far in this task (risk limits)
+    approvals_rejected: int          # user rejections in this task
