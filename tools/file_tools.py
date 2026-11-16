@@ -1,132 +1,154 @@
+import json
 import os
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-# Module-level workspace path — set dynamically by main.py before graph runs
-WORKSPACE_PATH = ""
+from core.safety import SafetyError, check_writable, resolve_in_root
+from core.schemas import ProjectContext
+from tools._ctx import err, get_project
 
 
-def _validate_path(target: str) -> str | None:
-    """Returns an error string if path is unsafe, None if OK."""
-    if ".." in target or os.path.isabs(target):
-        return f"ERROR: Path traversal or absolute paths are forbidden: {target}"
-    full_path = os.path.abspath(os.path.join(WORKSPACE_PATH, target))
-    if not full_path.startswith(os.path.abspath(WORKSPACE_PATH)):
-        return f"ERROR: Cannot access files outside workspace: {target}"
-    return None
+def _target(ctx: ProjectContext, target: str, writing: bool):
+    """Resolve a workspace-relative target. Returns (full_path, key) or raises SafetyError."""
+    full = resolve_in_root(ctx.root, target)
+    key = ctx.key(full)
+    if writing:
+        e = check_writable(key, ctx.protected_paths, ctx.allow_protected)
+        if e:
+            raise e
+    return full, key
 
 
-@tool
-def create_file(target_file: str, content: str) -> str:
-    """Creates a new file in the workspace with the specified content."""
-    err = _validate_path(target_file)
-    if err:
-        return err
-    
-    full_path = os.path.abspath(os.path.join(WORKSPACE_PATH, target_file))
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    
-    with open(full_path, "w", encoding="utf-8") as f:
+def _check_content(ctx: ProjectContext, content: str) -> None:
+    if "\x00" in content:
+        raise SafetyError("BINARY_CONTENT", "Binary content cannot be written.")
+    if len(content.encode("utf-8")) > ctx.limits.max_file_bytes:
+        raise SafetyError("TOO_LARGE", f"Content exceeds {ctx.limits.max_file_bytes} bytes.")
+
+
+def _read_text(full) -> str:
+    with open(full, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+# Core operations: return a success message or raise SafetyError. Shared by tools and batch.
+
+def _create(ctx, target, content):
+    full, key = _target(ctx, target, True)
+    _check_content(ctx, content)
+    if os.path.exists(full):
+        raise SafetyError("FILE_EXISTS", f"{target} already exists. Read it, then use write_file or patch_file.")
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as f:
         f.write(content)
-    return f"Successfully created file: {target_file}"
+    ctx.files_read.add(key)
+    return f"Successfully created file: {target}"
 
 
-@tool
-def write_file(target_file: str, content: str) -> str:
-    """Overwrites an existing file in the workspace with new content."""
-    err = _validate_path(target_file)
-    if err:
-        return err
-    
-    full_path = os.path.abspath(os.path.join(WORKSPACE_PATH, target_file))
-    if not os.path.exists(full_path):
-        # Create it if it doesn't exist (graceful fallback)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    
-    with open(full_path, "w", encoding="utf-8") as f:
+def _write(ctx, target, content):
+    full, key = _target(ctx, target, True)
+    _check_content(ctx, content)
+    if not os.path.isfile(full):
+        raise SafetyError("FILE_NOT_FOUND", f"{target} does not exist. Use create_file for new files.")
+    if key not in ctx.files_read:
+        raise SafetyError("READ_REQUIRED", f"Read {target} with read_file before modifying it.")
+    with open(full, "w", encoding="utf-8") as f:
         f.write(content)
-    return f"Successfully updated file: {target_file}"
+    return f"Successfully updated file: {target}"
 
 
-@tool
-def read_file(target_file: str) -> str:
-    """Reads and returns the content of a file in the workspace."""
-    err = _validate_path(target_file)
-    if err:
-        return err
-    
-    full_path = os.path.abspath(os.path.join(WORKSPACE_PATH, target_file))
-    if not os.path.exists(full_path):
-        return f"ERROR: File not found: {target_file}"
-    
+def _patch(ctx, target, search_text, replace_text):
+    full, key = _target(ctx, target, True)
+    if not os.path.isfile(full):
+        raise SafetyError("FILE_NOT_FOUND", f"File not found: {target}")
+    if key not in ctx.files_read:
+        raise SafetyError("READ_REQUIRED", f"Read {target} with read_file before modifying it.")
     try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            return f.read()
+        content = _read_text(full)
     except UnicodeDecodeError:
-        return f"ERROR: Cannot read binary file: {target_file}"
-
-
-@tool
-def patch_file(target_file: str, search_text: str, replace_text: str) -> str:
-    """Patches a file by finding search_text and replacing it with replace_text.
-    Much more efficient than rewriting the entire file for small changes.
-    The search_text must be an exact match of existing content in the file."""
-    err = _validate_path(target_file)
-    if err:
-        return err
-    
-    full_path = os.path.abspath(os.path.join(WORKSPACE_PATH, target_file))
-    if not os.path.exists(full_path):
-        return f"ERROR: File not found: {target_file}"
-    
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except UnicodeDecodeError:
-        return f"ERROR: Cannot read binary file: {target_file}"
-    
+        raise SafetyError("BINARY_FILE", f"Cannot read binary file: {target}")
     if search_text not in content:
-        return f"ERROR: search_text not found in {target_file}. Make sure it matches exactly."
-    
-    # Count occurrences
+        raise SafetyError("SEARCH_NOT_FOUND", f"search_text not found in {target}. Make sure it matches exactly.")
     count = content.count(search_text)
     new_content = content.replace(search_text, replace_text)
-    
-    with open(full_path, "w", encoding="utf-8") as f:
+    _check_content(ctx, new_content)
+    with open(full, "w", encoding="utf-8") as f:
         f.write(new_content)
-    
-    return f"Successfully patched {target_file} ({count} occurrence(s) replaced)."
+    return f"Successfully patched {target} ({count} occurrence(s) replaced)."
+
+
+def _as_str(fn, *a):
+    try:
+        return fn(*a)
+    except SafetyError as e:
+        return err(e.code, e.message)
 
 
 @tool
-def batch_file_operations(operations: list[dict]) -> str:
-    """Executes multiple file operations in a single tool call.
-    Supported operations: 'create', 'write', 'patch'.
-    Format: [{'operation': 'create', 'target_file': '...', 'content': '...'}, 
+def create_file(target_file: str, content: str, config: RunnableConfig) -> str:
+    """Creates a NEW file in the workspace. Fails if the file already exists."""
+    return _as_str(_create, get_project(config), target_file, content)
+
+
+@tool
+def write_file(target_file: str, content: str, config: RunnableConfig) -> str:
+    """Overwrites an EXISTING file with new content. You must read_file it first in this task."""
+    return _as_str(_write, get_project(config), target_file, content)
+
+
+@tool
+def read_file(target_file: str, config: RunnableConfig) -> str:
+    """Reads and returns the content of a file in the workspace."""
+    ctx = get_project(config)
+    try:
+        full, key = _target(ctx, target_file, False)
+    except SafetyError as e:
+        return err(e.code, e.message)
+    if not os.path.isfile(full):
+        return err("FILE_NOT_FOUND", f"File not found: {target_file}")
+    try:
+        text = _read_text(full)
+    except UnicodeDecodeError:
+        return err("BINARY_FILE", f"Cannot read binary file: {target_file}")
+    ctx.files_read.add(key)
+    return text
+
+
+@tool
+def patch_file(target_file: str, search_text: str, replace_text: str, config: RunnableConfig) -> str:
+    """Patches a file by finding search_text and replacing it with replace_text.
+    Much more efficient than rewriting the entire file for small changes.
+    The search_text must be an exact match of existing content. You must read_file it first in this task."""
+    return _as_str(_patch, get_project(config), target_file, search_text, replace_text)
+
+
+@tool
+def batch_file_operations(operations: list[dict], config: RunnableConfig) -> str:
+    """Executes multiple file operations in a single tool call and returns a JSON list of per-operation results.
+    Supported operations: 'create' (new file), 'write' (existing file, must be read first), 'patch'.
+    Format: [{'operation': 'create', 'target_file': '...', 'content': '...'},
              {'operation': 'patch', 'target_file': '...', 'search_text': '...', 'replace_text': '...'}]
     """
+    ctx = get_project(config)
     results = []
     for op in operations:
-        op_type = op.get("operation")
-        target = op.get("target_file")
-        
-        if not target:
-            results.append("ERROR: Missing 'target_file' in operation.")
-            continue
-            
-        if op_type == "create" or op_type == "write":
-            content = op.get("content", "")
-            # Reuse existing logic
-            res = write_file.invoke({"target_file": target, "content": content})
-            results.append(res)
-        elif op_type == "patch":
-            search = op.get("search_text")
-            replace = op.get("replace_text")
-            if search is None or replace is None:
-                results.append(f"ERROR: Missing search/replace text for patch: {target}")
+        op_type, target = op.get("operation"), op.get("target_file")
+        res = {"operation": op_type, "target_file": target, "ok": False, "code": None, "message": ""}
+        try:
+            if not target:
+                raise SafetyError("BAD_OPERATION", "Missing 'target_file'.")
+            if op_type == "create":
+                res["message"] = _create(ctx, target, op.get("content", ""))
+            elif op_type == "write":
+                res["message"] = _write(ctx, target, op.get("content", ""))
+            elif op_type == "patch":
+                if op.get("search_text") is None or op.get("replace_text") is None:
+                    raise SafetyError("BAD_OPERATION", "Missing search_text/replace_text.")
+                res["message"] = _patch(ctx, target, op["search_text"], op["replace_text"])
             else:
-                res = patch_file.invoke({"target_file": target, "search_text": search, "replace_text": replace})
-                results.append(res)
-        else:
-            results.append(f"ERROR: Unknown operation type '{op_type}' for {target}")
-            
-    return "\n".join(results)
+                raise SafetyError("BAD_OPERATION", f"Unknown operation type '{op_type}'.")
+            res["ok"] = True
+        except SafetyError as e:
+            res["code"], res["message"] = e.code, e.message
+        results.append(res)
+    return json.dumps(results)

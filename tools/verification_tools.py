@@ -2,22 +2,23 @@ import os
 import subprocess
 import json
 import requests
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-# Set dynamically by main.py
-WORKSPACE_PATH = ""
+from core.safety import SafetyError, resolve_in_root
+from tools._ctx import err, get_project
+
 
 @tool
-def verify_code_syntax(file_path: str) -> str:
+def verify_code_syntax(file_path: str, config: RunnableConfig) -> str:
     """Verifies the syntax of a given code file without executing its runtime logic. 
     Supports .py, .js, .cpp, .c, and .json files.
     Use this to ensure there are no indentation or basic syntax errors before marking the task complete."""
     
-    # Resolve relative paths gracefully
-    full_path = file_path
-    if not os.path.isabs(file_path) and WORKSPACE_PATH:
-        full_path = os.path.join(WORKSPACE_PATH, file_path)
-        
+    try:
+        full_path = str(resolve_in_root(get_project(config).root, file_path))
+    except SafetyError as e:
+        return err(e.code, e.message)
     if not os.path.exists(full_path):
         return f"ERROR: File '{file_path}' does not exist."
 
