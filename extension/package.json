@@ -62,7 +62,8 @@
     "typecheck": "tsc -p . --noEmit && tsc -p ../ui --noEmit",
     "package": "npm run build && vsce package --allow-missing-repository --skip-license --no-dependencies",
     "pretest": "tsc -p tsconfig.test.json",
-    "test": "node out-test/test/runTest.js"
+    "test": "node out-test/test/runTest.js",
+    "test:vsix": "npm run package && tsc -p tsconfig.test.json && node out-test/test/runTest.js --vsix nexura-ai-0.1.0.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",

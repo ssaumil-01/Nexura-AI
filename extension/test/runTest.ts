@@ -4,7 +4,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { runTests } from "@vscode/test-electron";
+import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } from "@vscode/test-electron";
 
 function git(cwd: string, ...args: string[]) {
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "pipe" });
@@ -12,7 +12,7 @@ function git(cwd: string, ...args: string[]) {
 
 async function main() {
   delete process.env.ELECTRON_RUN_AS_NODE; // set by some host terminals; it would start VS Code as plain Node
-  const extensionDevelopmentPath = path.resolve(__dirname, "../..");
+  let extensionDevelopmentPath = path.resolve(__dirname, "../..");
   const extensionTestsPath = path.resolve(__dirname, "suite/index");
   const repo = path.resolve(extensionDevelopmentPath, "..");
   const python = process.env.NEXURA_TEST_PYTHON ??
@@ -28,7 +28,26 @@ async function main() {
   git(ws, "add", "-A");
   git(ws, "commit", "-qm", "init");
 
+  // --vsix <file.vsix> (or NEXURA_TEST_VSIX): install the PACKAGED extension into a clean VS Code and test that installed copy
+  // (its bundled backend, not the repo checkout).
+  const argIdx = process.argv.indexOf("--vsix");
+  const vsix = argIdx >= 0 ? process.argv[argIdx + 1] : process.env.NEXURA_TEST_VSIX;
+  let vscodeExecutablePath: string | undefined;
+  if (vsix) {
+    vscodeExecutablePath = await downloadAndUnzipVSCode();
+    const [cli, ...cliArgs] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
+    const extDir = path.join(data, "extensions");
+    const r = execFileSync(cli, [...cliArgs, `--extensions-dir=${extDir}`, `--user-data-dir=${path.join(data, "cli-user")}`, "--install-extension", path.resolve(vsix)],
+      { encoding: "utf8", shell: process.platform === "win32" });
+    console.log(r);
+    const installed = fs.readdirSync(extDir).find((d) => d.startsWith("nexura-local.nexura-ai"));
+    if (!installed) throw new Error("the .vsix did not install");
+    extensionDevelopmentPath = path.join(extDir, installed);
+    console.log("testing the installed copy:", extensionDevelopmentPath, "(bundled backend:", fs.existsSync(path.join(extensionDevelopmentPath, "backend", "server.py")), ")");
+  }
+
   await runTests({
+    vscodeExecutablePath,
     extensionDevelopmentPath,
     extensionTestsPath,
     launchArgs: [ws, "--disable-extensions", "--disable-workspace-trust", `--user-data-dir=${path.join(data, "user")}`],
