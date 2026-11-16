@@ -103,4 +103,4 @@ approvals, checkpoints, state manager, runner, run manager), `tools/` (file, dir
 - `python`/`node` are allowed, and they can run arbitrary code: V1 has an allowlist, not a sandbox (a container sandbox is V2).
 - `pip install` goes to whichever Python is first on PATH; the approval prompt tells you which one.
 - No repository indexing: large projects are summarised by path and first lines within a character budget.
-- The `App/` Tauri prototype is superseded by the VS Code extension and kept only until you decide to archive it.
+- The old Tauri prototype lives in `archive/App/`. It is superseded by the VS Code extension and is not used by anything.

@@ -13,7 +13,7 @@ node_modules/
 dist/
 out/
 *.vsix
-App/src-tauri/target/
+archive/App/src-tauri/target/
 .nexura/
 .pytest_cache/
 .ruff_cache/
