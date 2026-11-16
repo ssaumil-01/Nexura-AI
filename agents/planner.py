@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from dotenv import load_dotenv
 
 from langchain_core.prompts import PromptTemplate
@@ -9,11 +10,13 @@ from google import genai
 from google.genai import types
 
 import config
+from agents.llm import backoff_delay
 from core.schemas import Acceptance, ExecutionPlan, Step  # noqa: F401  (re-exported for callers)
 from core.task_manager import validate_plan
 
 load_dotenv()
 
+TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|timed? ?out|overloaded", re.IGNORECASE)
 PLAN_ATTEMPTS = 3  # first try + 2 retries with the error fed back
 
 
@@ -69,6 +72,7 @@ Each step must represent EXACTLY ONE action.
    For http_status the "url" field is REQUIRED (the full http://127.0.0.1:PORT/path to request; use the port from start_command).
    Commands are ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <)
    outside quotes. Run tests with `python -m pytest -q` (not bare `pytest`), so the project root is importable.
+   Acceptance checks must NEVER install packages (no `pip install`/`npm install`): installing is part of the step's work, not a check.
    Only a step that purely writes documentation may use "acceptance": [] together with "documentation_only": true.
 
 4. DO NOT SPECIFY TOOLS OR FILE PATHS IN THE PLAN
@@ -152,6 +156,20 @@ class PlannerAgent:
         )
         return response.text.strip()
 
+    def _call_with_retry(self, prompt: str) -> str:
+        """Transient API errors (rate limit, 5xx 'high demand', timeouts) are retried with backoff; others fail at once."""
+        for attempt in range(config.MAX_RETRIES):
+            try:
+                return self.call_llm(prompt)
+            except Exception as e:
+                text = str(e)
+                if attempt + 1 >= config.MAX_RETRIES or not TRANSIENT.search(text):
+                    raise
+                wait = backoff_delay(attempt, text)
+                print(f"[Planner] transient API error ({text[:80]}...), retrying in {wait:.0f}s")
+                time.sleep(wait)
+        raise AssertionError("unreachable")
+
     def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None) -> ExecutionPlan:
         """Generate a validated plan. Retries up to PLAN_ATTEMPTS-1 times, feeding the error back. Raises PlanError."""
         if not self.client:
@@ -189,7 +207,7 @@ Reminder of the required fields per acceptance type: file_exists(path), syntax_o
 output_contains(command, text), http_status(url, and usually start_command). Return corrected JSON only.
 """
             try:
-                raw = self.call_llm(attempt_prompt)
+                raw = self._call_with_retry(attempt_prompt)
                 plan_obj = ExecutionPlan.model_validate_json(strip_fences(raw))
                 problems = validate_plan(plan_obj)
                 if problems:

@@ -76,7 +76,7 @@ Summary below; full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 - **Confinement:** all paths resolve (real paths, no `..`, no symlink escapes, Windows drives handled) inside the opened folder.
 - **Commands:** one allowlisted program (`python`, `pip`, `node`, `npm`, `npx`, `uvicorn`, `pytest`, `streamlit`, `flask`), no shell,
-  no operators; installs only through `install_dependency` and only with your approval; servers run as managed processes that are
+  no operators outside quotes; installs only through `install_dependency` and only with your approval; servers run as managed processes that are
   killed (whole tree) at task end.
 - **Files:** read-before-write, size and binary limits, `.env*` and `.git/` never writable, lockfiles/keys/CI workflows need approval,
   files with unsaved editor changes are never touched, ignored and secret files never reach the model, credentials in output are redacted.

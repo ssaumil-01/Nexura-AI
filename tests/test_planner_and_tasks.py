@@ -125,12 +125,50 @@ def test_planner_gives_up_after_three_invalid_answers(planner):
         planner.plan("x", planner.path)
 
 
-def test_planner_api_failure_is_not_retried(planner):
+def test_planner_permanent_api_failure_is_not_retried(planner):
     from agents.planner import PlanError
-    planner.replies = [RuntimeError("503 down")]
+    planner.replies = [RuntimeError("401 API key not valid")]
     with pytest.raises(PlanError, match="LLM call failed"):
         planner.plan("x", planner.path)
     assert len(planner.prompts) == 1
+
+
+def test_planner_retries_transient_api_errors_with_backoff(planner, monkeypatch):
+    """A Gemini '503 high demand' used to kill the run instantly."""
+    import time
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    planner.replies = [RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand."), RuntimeError("429 RESOURCE_EXHAUSTED"), GOOD]
+    assert len(planner.plan("x", planner.path).steps) == 2
+    assert len(sleeps) == 2 and sleeps[1] > 0
+
+
+def test_planner_gives_up_on_persistent_transient_errors(planner, monkeypatch):
+    import time
+    from agents.planner import PlanError
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    planner.replies = [RuntimeError("503 UNAVAILABLE")] * 3
+    with pytest.raises(PlanError, match="LLM call failed"):
+        planner.plan("x", planner.path)
+
+
+def test_acceptance_commands_that_can_never_run_are_sent_back_to_the_planner(planner):
+    """`pip install` as an acceptance check can never pass (installs are a separate, approved tool): the planner must fix it."""
+    def with_check(cmd):
+        st = step(1)
+        st["acceptance"] = [{"type": "command_ok", "command": cmd}]
+        return json.dumps({"project_id": "p", "goal": "g", "steps": [st]})
+    planner.replies = [with_check("pip install -r requirements.txt"), with_check("python a.py | more"), with_check("python -m pytest -q")]
+    out = planner.plan("x", planner.path)
+    assert out.steps[0].acceptance[0].command == "python -m pytest -q"
+    assert "USE_INSTALL_DEPENDENCY" in planner.prompts[1] and "SHELL_OPERATOR" in planner.prompts[2]
+
+
+def test_validate_plan_flags_unrunnable_acceptance_commands():
+    p = plan({**step(1), "acceptance": [{"type": "http_status", "start_command": "curl http://x", "url": "http://127.0.0.1:1/"}]})
+    assert "NOT_ALLOWED" in "; ".join(validate_plan(p))
+    ok = plan({**step(1), "acceptance": [{"type": "output_contains", "command": "python -c \"print(1); print(2)\"", "text": "2"}]})
+    assert validate_plan(ok) == []
 
 
 def test_planner_prompt_version_and_granularity():

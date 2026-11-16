@@ -2,6 +2,28 @@
 import config
 
 
+# Command problems the planner can fix by rewriting the check (NOT_FOUND depends on the machine, so it is not judged at plan time)
+PLAN_TIME_CODES = {"SHELL_OPERATOR", "NOT_ALLOWED", "USE_INSTALL_DEPENDENCY", "BAD_COMMAND", "EMPTY_COMMAND", "BAD_INSTALL",
+                   "NOT_AN_INSTALL", "OUTSIDE_ROOT"}
+
+
+def _bad_commands(step) -> list[str]:
+    """Acceptance commands the validator would always reject (e.g. `pip install ...`), so the check could never pass."""
+    from core.safety import SafetyError, parse_command
+    out = []
+    for acc in step.acceptance:
+        for cmd in (acc.command, acc.start_command):
+            if not cmd:
+                continue
+            try:
+                parse_command(cmd, ".")
+            except SafetyError as e:
+                if e.code in PLAN_TIME_CODES:
+                    out.append(f"step {step.step_id}: acceptance command `{cmd}` is not allowed ({e.code}: {e.message}); "
+                               "checks must not install packages or use shell operators")
+    return out
+
+
 def validate_plan(plan) -> list[str]:
     """Return a list of problems with an ExecutionPlan (empty list = valid)."""
     errs: list[str] = []
@@ -19,6 +41,7 @@ def validate_plan(plan) -> list[str]:
                 errs.append(f"step {s.step_id} depends on step {d}, which is not earlier")
         if not s.acceptance and not s.documentation_only:
             errs.append(f"step {s.step_id} has no acceptance checks (set documentation_only only for pure docs)")
+        errs += _bad_commands(s)
     return errs
 
 
