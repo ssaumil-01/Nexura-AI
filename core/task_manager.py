@@ -67,3 +67,26 @@ def load_tasks(plan: dict) -> list:
     return [TaskRecord(task_id=s["step_id"], title=s["title"], description=s.get("description", ""),
                        dependencies=s.get("dependencies", []), acceptance=s.get("acceptance", []))
             for s in plan.get("steps", [])]
+
+
+def render_plan_md(plan: dict, status: dict[str, str], errors: dict[str, str] | None = None, run_status: str | None = None) -> str:
+    """Human-readable view of the plan with live status. plan.json stays the machine copy; agents never edit either."""
+    errors = errors or {}
+    mark = {"done": "[x]", "failed": "[!]", "skipped": "[-]"}
+    md = f"# Project: {plan.get('project_id', '')}\n**Goal**: {plan.get('goal', '')}\n"
+    if run_status:
+        md += f"**Run status**: {run_status}\n"
+    md += "\n## Execution Steps\n\n"
+    for s in plan.get("steps", []):
+        sid = str(s["step_id"])
+        st = status.get(sid, "pending")
+        line = f"- {mark.get(st, '[ ]')} **Step {s['step_id']}: {s['title']}**"
+        if st == "running":
+            line += " (in progress)"
+        elif st in ("failed", "skipped"):
+            line += f" ({st.upper()}" + (f": {errors[sid]}" if sid in errors else "") + ")"
+        md += line + "\n"
+        md += f"  {s.get('description', '')}\n"
+        for a in s.get("acceptance", []):
+            md += "  - check: " + ", ".join(f"{k}={v}" for k, v in a.items() if v is not None) + "\n"
+    return md

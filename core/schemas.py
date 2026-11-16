@@ -1,6 +1,6 @@
 """Pydantic models shared across the control plane."""
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,9 +29,22 @@ class ProjectContext(BaseModel):
     ignore_patterns: list[str] = Field(default_factory=list)
     allow_protected: bool = False  # set only after explicit approval (Phase 5)
 
+    # persistence (all optional so tools/tests work without them)
+    project_id: Optional[str] = None
+    run_dir: Optional[Path] = None          # where plan.json / plan.md / logs live (outside the user's workspace)
+    state_manager: Any = Field(default=None, exclude=True)
+    logger: Any = Field(default=None, exclude=True)
+
     # runtime state (not serialised)
     files_read: set[str] = Field(default_factory=set, exclude=True)
     processes: Any = Field(default_factory=ProcessManager, exclude=True)
+
+    def emit(self, type: str, task_id: int | None = None, agent: str = "orchestrator", **data) -> None:
+        """Record a lifecycle event in the state DB and the JSONL log (whichever are attached)."""
+        if self.state_manager is not None:
+            self.state_manager.add_event(self.run_id, type, task_id, **data)
+        if self.logger is not None:
+            self.logger.log(agent=agent, task_id=task_id, result=type, output_summary=str(data) if data else "")
 
     def key(self, full: Path | str) -> str:
         return rel_key(self.root, full)

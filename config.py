@@ -67,3 +67,10 @@ def configure_observability() -> None:
         print("[Config] LangSmith tracing DISABLED (no LANGCHAIN_API_KEY found)")
 
 MAX_BATCH_OPS = 10
+
+# --- Data locations (the VS Code extension points NEXURA_DATA_DIR at its storage dir) ---
+from pathlib import Path  # noqa: E402
+
+DATA_DIR = Path(os.getenv("NEXURA_DATA_DIR") or Path(__file__).resolve().parent / "memory")
+DB_PATH = DATA_DIR / "nexura.db"              # state_manager (projects, runs, tasks, file_changes, events)
+CHECKPOINT_DB_PATH = DATA_DIR / "checkpoints.db"  # LangGraph checkpoints

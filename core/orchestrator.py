@@ -20,7 +20,7 @@ from core import retry_manager, validator, verification
 from core.context_builder import build_context
 from core.schemas import Action
 from core.state import NexuraState
-from core.task_manager import final_run_status, pick_next
+from core.task_manager import final_run_status, load_tasks, pick_next, render_plan_md
 
 
 # ─── HELPERS ────────────────────────────────────────────────
@@ -28,10 +28,6 @@ from core.task_manager import final_run_status, pick_next
 def _short(value: Any, n: int = 200) -> str:
     text = value if isinstance(value, str) else str(value)
     return text if len(text) <= n else text[:n] + "..."
-
-
-def _log_llm(role, prompt_version, model, result):
-    print(f"  [LLM] role={role} prompt_version={prompt_version} model={model} result={result}")
 
 
 def _fail(reason: str) -> dict:
@@ -50,26 +46,61 @@ def _cur(state: NexuraState) -> dict:
     return state["tasks"][state["current_task_index"]]
 
 
+def _ctx(config: RunnableConfig):
+    return config["configurable"]["project"]
+
+
+def _write_plan_md(ctx, state_values: dict) -> None:
+    """Re-render plan.md (a view of the plan with live status) into the run folder."""
+    if ctx.run_dir and state_values.get("plan"):
+        ctx.run_dir.mkdir(parents=True, exist_ok=True)
+        (ctx.run_dir / "plan.md").write_text(render_plan_md(
+            state_values["plan"], state_values.get("task_status") or {}, state_values.get("task_errors"),
+            state_values.get("run_status")), encoding="utf-8")
+
+
+def _llm_logger(ctx, task_id):
+    def log(role, prompt_version, model, result, input_summary="", output_summary="", tokens=None):
+        if ctx.logger is not None:
+            ctx.logger.log(agent=role, task_id=task_id, prompt_version=prompt_version, model=model, input_summary=input_summary,
+                           output_summary=output_summary, result=result, tokens=tokens)
+        if ctx.state_manager is not None:
+            ctx.state_manager.add_event(ctx.run_id, "llm_call", task_id, role=role, result=result, tokens=tokens)
+        print(f"  [LLM] role={role} prompt_version={prompt_version} model={model} result={result}")
+    return log
+
+
+def _finish_run(ctx, status: str, error: str | None = None) -> None:
+    if ctx.state_manager is not None:
+        ctx.state_manager.update_run(ctx.run_id, status, error)
+    ctx.emit("run_finished", status=status, error=error)
+
+
 # ─── PLANNING ───────────────────────────────────────────────
 
-def planner_node(state: NexuraState) -> dict:
+def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Generates the execution plan from user prompt. Supports re-planning with feedback."""
     from agents.planner import PlannerAgent, PlanError
 
+    ctx = _ctx(config)
+    plan_dir = ctx.run_dir or (ctx.root / ".nexura")  # plan files live outside the user's tree when a run dir exists
     feedback = state.get("plan_feedback")
     previous_plan = state.get("plan")
     print("\n--- [1] Re-running Planner with feedback ---" if feedback and previous_plan else "\n--- [1] Running Planner ---")
 
     try:
-        plan = PlannerAgent().plan(user_prompt=state["user_prompt"], project_path=state["workspace_path"],
+        plan = PlannerAgent().plan(user_prompt=state["user_prompt"], project_path=str(plan_dir),
                                    feedback=feedback, previous_plan=previous_plan)
     except PlanError as e:
         print(f"[Planner] FAILED: {e}")
+        _finish_run(ctx, "failed", f"Planner failed: {e}")
         return {"run_status": "failed", "run_error": f"Planner failed: {e}"}
 
     plan_dict = plan.model_dump()
     tasks = plan_dict.get("steps", [])
     print(f"[Planner] Generated {len(tasks)} tasks for project: {plan_dict.get('project_id', 'unknown')}")
+    if ctx.state_manager is not None:
+        ctx.state_manager.save_plan(ctx.run_id, plan_dict, load_tasks(plan_dict))
     return {
         "plan": plan_dict, "tasks": tasks, "current_task_index": 0, "plan_feedback": None,
         "task_status": {str(t["step_id"]): "pending" for t in tasks}, "task_errors": {},
@@ -77,11 +108,16 @@ def planner_node(state: NexuraState) -> dict:
     }
 
 
+def route_start(state: NexuraState) -> str:
+    """A resumed run already has an approved plan: skip planning and review."""
+    return "task_picker" if state.get("resuming") else "planner"
+
+
 def route_after_planner(state: NexuraState) -> str:
     return END if state.get("run_status") == "failed" else "review_plan"
 
 
-def review_plan_node(state: NexuraState) -> Command:
+def review_plan_node(state: NexuraState, config: RunnableConfig) -> Command:
     """Displays the plan and asks the user for approval or feedback."""
     plan, tasks = state["plan"], state["tasks"]
     print("\n" + "=" * 50 + "\nGENERATED PLAN\n" + "=" * 50)
@@ -103,6 +139,7 @@ def review_plan_node(state: NexuraState) -> Command:
     if replans >= app_config.MAX_REPLANS:
         msg = f"Re-plan limit reached ({app_config.MAX_REPLANS}). Stopping."
         print(f"[Review] {msg}")
+        _finish_run(_ctx(config), "failed", msg)
         return Command(goto=END, update={"run_status": "failed", "run_error": msg})
     print("[Review] Feedback received. Re-planning...")
     return Command(goto="planner", update={"plan_feedback": user_input.strip(), "replan_count": replans + 1})
@@ -116,8 +153,11 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
     if idx >= len(tasks):
         return {}  # nothing left: routes to END
     task = tasks[idx]
-    ctx = config["configurable"]["project"]
+    ctx = _ctx(config)
     ctx.reset_task()
+    if ctx.state_manager is not None:
+        ctx.state_manager.mark_task(ctx.run_id, task["step_id"], "running")
+    ctx.emit("task_started", task["step_id"], title=task["title"])
 
     run_changed = [fc["file"] for fc in state.get("file_changes", [])]
     workspace_context, breakdown = build_context(task, ctx.root, run_changed)
@@ -133,6 +173,8 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
 
     status = dict(state.get("task_status") or {})
     status[str(task["step_id"])] = "running"
+    started_status = {**(state.get("task_status") or {}), str(task["step_id"]): "running"}
+    _write_plan_md(ctx, {**state, "task_status": started_status})
     return {
         # remove ALL previous messages (the add_messages reducer ignores a bare []), then start fresh
         "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(content=prompt)],
@@ -142,9 +184,9 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
     }
 
 
-def _agent_turn(state: NexuraState, propose, role_label: str) -> dict:
+def _agent_turn(state: NexuraState, propose, role_label: str, config: RunnableConfig) -> dict:
     task_msgs = state["messages"]
-    response, failure = propose(task_msgs, on_log=_log_llm)
+    response, failure = propose(task_msgs, on_log=_llm_logger(_ctx(config), _cur(state)["step_id"]))
     if failure:
         print(f"  [!] {failure}")
         return _fail(failure)
@@ -160,13 +202,13 @@ def _agent_turn(state: NexuraState, propose, role_label: str) -> dict:
     return update
 
 
-def coder_node(state: NexuraState) -> dict:
-    return _agent_turn(state, coder.propose, "coder")
+def coder_node(state: NexuraState, config: RunnableConfig) -> dict:
+    return _agent_turn(state, coder.propose, "coder", config)
 
 
 def debugger_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Builds a focused prompt from the failure and asks the Debugger for fixes (proposals only)."""
-    ctx, task = config["configurable"]["project"], _cur(state)
+    ctx, task = _ctx(config), _cur(state)
     names = list(dict.fromkeys(state.get("changed_files", [])
                                + [a["path"] for a in task.get("acceptance", []) if a.get("path")]
                                + [p for a in task.get("acceptance", []) for p in (a.get("paths") or [])]))[:6]
@@ -184,7 +226,7 @@ def debugger_node(state: NexuraState, config: RunnableConfig) -> dict:
                                    files)
     print(f"  [Debugger] attempt {state.get('attempts', 0)} for task {task['step_id']}")
     state = {**state, "messages": [HumanMessage(content=prompt)]}  # fresh, focused conversation
-    out = _agent_turn(state, debugger.propose, "debugger")
+    out = _agent_turn(state, debugger.propose, "debugger", config)
     if "messages" in out:
         out["messages"] = [RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(content=prompt), *out["messages"]]
     return out
@@ -216,6 +258,7 @@ def validate_node(state: NexuraState, config: RunnableConfig) -> dict:
         if not r.ok:
             rejected += 1
             last_reject = f"{r.code}: {r.message}"
+            ctx.emit("validation_rejected", task["step_id"], code=r.code, tool=tc["name"])
             msgs.append(_tool_msg(f"ERROR: {r.code}: {r.message}", tc, True))
             hist.append(_hist(task, tc["name"], tc["args"], last_reject, "rejected"))
             continue
@@ -277,7 +320,10 @@ def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
         text = res.text()
         msgs.append(_tool_msg(text, p, not res.ok))
         hist.append(_hist(task, p["name"], p["args"], text, "ok" if res.ok else "error"))
+        ctx.emit("tool_call", task["step_id"], agent="executor", tool=p["name"], ok=res.ok, code=res.code)
         for fc in res.file_changes:
+            if ctx.state_manager is not None:
+                ctx.state_manager.add_file_change(ctx.run_id, fc, "auto")
             changes.append(fc.model_dump())
             if fc.file not in changed:
                 changed.append(fc.file)
@@ -311,6 +357,7 @@ def verify_node(state: NexuraState, config: RunnableConfig) -> dict:
     for c in result.checks:
         print(f"  [Verify] {'PASS' if c.ok else 'FAIL'} {c.type}: {_short(c.detail, 160)}")
     if result.ok:
+        ctx.emit("verification_passed", task["step_id"], checks=len(result.checks))
         return {"task_outcome": "done", "want_verify": False,
                 "execution_history": state["execution_history"] + [_hist(task, "verification", "", "passed", "ok")]}
 
@@ -318,6 +365,7 @@ def verify_node(state: NexuraState, config: RunnableConfig) -> dict:
     failure = result.failure_text()
     decision = retry_manager.decide(task, attempts, failure)
     entry = {**_hist(task, "verification", "", failure, "error"), "error_type": decision.error_type}
+    ctx.emit("verification_failed", task["step_id"], error_type=decision.error_type, attempt=attempts, detail=_short(failure, 300))
     update = {"attempts": attempts, "want_verify": False, "execution_history": state["execution_history"] + [entry]}
     if decision.action == "fail":
         update.update(_fail(f"VERIFICATION_FAILED: {_short(failure, 300)}"))
@@ -334,7 +382,8 @@ def advance_task_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Records the REAL outcome of the current task and moves to the next runnable one."""
     task = _cur(state)
     sid = str(task["step_id"])
-    config["configurable"]["project"].reset_task()
+    ctx = _ctx(config)
+    ctx.reset_task()
 
     outcome = state.get("task_outcome")
     status, errors = dict(state.get("task_status") or {}), dict(state.get("task_errors") or {})
@@ -347,7 +396,15 @@ def advance_task_node(state: NexuraState, config: RunnableConfig) -> dict:
         result = f"failed: {errors[sid]}"
         print(f"[Orchestrator] Task {task['step_id']} FAILED: {errors[sid]}")
 
+    before = dict(status)
     nxt, status = pick_next(state["tasks"], status)
+    if ctx.state_manager is not None:
+        ctx.state_manager.mark_task(ctx.run_id, task["step_id"], status[sid], attempts=state.get("attempts", 0),
+                                    reason=errors.get(sid))
+        for k, v in status.items():
+            if v == "skipped" and before.get(k) != "skipped":
+                ctx.state_manager.mark_task(ctx.run_id, int(k), "skipped")
+    ctx.emit("task_done" if outcome == "done" else "task_failed", task["step_id"], reason=errors.get(sid), attempts=state.get("attempts", 0))
     update = {
         "task_status": status, "task_errors": errors,
         "execution_history": state["execution_history"] + [_hist(task, "task_outcome", "", result, "ok" if outcome == "done" else "error")],
@@ -356,6 +413,8 @@ def advance_task_node(state: NexuraState, config: RunnableConfig) -> dict:
     }
     if nxt is None:
         update["run_status"] = final_run_status(status)
+        _finish_run(ctx, update["run_status"])
+    _write_plan_md(ctx, {**state, **update})
     return update
 
 
@@ -377,7 +436,7 @@ def build_graph(interactive: bool = False, checkpointer: Any = None):
                      ("advance_task", advance_task_node)]:
         b.add_node(name, fn)
 
-    b.add_edge(START, "planner")
+    b.add_conditional_edges(START, route_start, {"planner": "planner", "task_picker": "task_picker"})
     b.add_conditional_edges("planner", route_after_planner, {"review_plan": "review_plan", END: END})
     # review_plan, approval: Command(goto=...)
     b.add_conditional_edges("task_picker", should_continue, {"continue": "coder", "end": END})

@@ -13,3 +13,8 @@
 - 2026-11-16: Failure policy default is `stop` (config.FAILURE_POLICY / NEXURA_FAILURE_POLICY); run status: all done=completed, some done=completed_with_failures, none done=failed.
 - 2026-11-16: Interactive tool approval is an explicit `approval` node using interrupt(); only yes/y/approve approves, other text rejects and is sent to the agent.
 - 2026-11-16: Graph nodes name their LangGraph config parameter `config`; the config module is imported as `app_config` inside core/graph.py.
+- 2026-11-16: Phase 3 control plane: agents (coder/debugger) only return tool calls; core/validator -> core/execution_manager (the only module importing tools; enforced by an AST test) -> core/verification. Verification default (no acceptance): syntax of changed files + LAST run of each distinct command must exit 0 (not "all runs").
+- 2026-11-16: Debugger is a separate prompt/agent (same model as the coder), restricted to read/patch/write-existing/run_command; rejections are fed into its next prompt.
+- 2026-11-16: Plan files (plan.json, plan.md) and run logs live in `<data dir>/runs/<run_id>/`, NOT in the user's workspace. plan.md is re-rendered after each task.
+- 2026-11-16: SQLite state DB `memory/nexura.db` (tables projects/runs/tasks/file_changes/events + schema_version); LangGraph checkpoints in separate `memory/checkpoints.db`; both under config.DATA_DIR (env NEXURA_DATA_DIR).
+- 2026-11-16: Resume = rebuild state from the DB (done tasks kept, all others reset to pending with attempts 0) and enter the graph at task_picker (route_start on `resuming`); new LangGraph thread per resume.

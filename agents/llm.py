@@ -66,7 +66,12 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
         try:
             response = llm_with_tools(role).invoke(messages)
             if on_log:
-                on_log(role=role, prompt_version=prompt_version, model=model, result="ok")
+                calls = [c["name"] for c in (getattr(response, "tool_calls", None) or [])]
+                usage = getattr(response, "usage_metadata", None) or {}
+                on_log(role=role, prompt_version=prompt_version, model=model, result="ok",
+                       input_summary=_short(getattr(messages[-1], "content", ""), 300),
+                       output_summary=("tool_calls: " + ", ".join(calls)) if calls else _short(getattr(response, "content", ""), 300),
+                       tokens=usage.get("total_tokens"))
             return response, None
         except config.ConfigError as e:
             return None, f"LLM_CONFIG: {e}"

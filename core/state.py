@@ -66,3 +66,4 @@ class NexuraState(TypedDict):
     error_type: Optional[str]
     want_verify: bool
     last_rejection: Optional[str]
+    resuming: bool                   # True when a run is resumed: skip planning/review

@@ -14,7 +14,7 @@ from core.orchestrator import build_graph
 from core.schemas import ProjectContext
 from core.task_manager import run_summary
 
-from langgraph.checkpoint.memory import InMemorySaver
+from core.state_manager import make_checkpointer
 
 load_dotenv()
 import config as nexura_config
@@ -33,7 +33,15 @@ app.add_middleware(
 
 # In-memory storage for active graphs and states
 # In a production app, this would use a persistent store or database
-checkpointers: Dict[str, Any] = {}
+_checkpointer = None
+
+
+def get_checkpointer():
+    """One durable (SQLite) checkpointer shared by all runs."""
+    global _checkpointer
+    if _checkpointer is None:
+        _checkpointer = make_checkpointer(nexura_config.CHECKPOINT_DB_PATH)
+    return _checkpointer
 
 class ChatRequest(BaseModel):
     project_id: str
@@ -52,8 +60,6 @@ async def root():
 async def create_project(req: ProjectCreate):
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", req.project_id)
     os.makedirs(workspace_path, exist_ok=True)
-    if req.project_id not in checkpointers:
-        checkpointers[req.project_id] = InMemorySaver()
     return {"project_id": req.project_id, "path": workspace_path}
 
 @app.get("/projects")
@@ -108,11 +114,7 @@ async def event_generator(project_id: str, prompt: str = None, resume_input: str
     workspace_path = os.path.join(os.path.dirname(__file__), "workspace", project_id)
     
     project = ProjectContext(run_id=project_id, root=workspace_path)
-    if project_id not in checkpointers:
-        checkpointers[project_id] = InMemorySaver()
-    
-    checkpointer = checkpointers[project_id]
-    graph = build_graph(interactive=interactive, checkpointer=checkpointer)
+    graph = build_graph(interactive=interactive, checkpointer=get_checkpointer())
     config = {"configurable": {"thread_id": project_id, "project": project}}
     
     if resume_input:

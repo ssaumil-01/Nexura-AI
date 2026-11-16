@@ -147,7 +147,9 @@ def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):
     monkeypatch.setattr(ap.PlannerAgent, "plan", lambda *a, **k: (_ for _ in ()).throw(ap.PlanError("boom")))
     from core.orchestrator import planner_node, route_after_planner
     from langgraph.graph import END
-    out = planner_node({"user_prompt": "x", "workspace_path": planner.path})
+    from core.schemas import ProjectContext
+    cfg = {"configurable": {"project": ProjectContext(run_id="r", root=planner.path)}}
+    out = planner_node({"user_prompt": "x", "workspace_path": planner.path}, cfg)
     assert out["run_status"] == "failed" and "boom" in out["run_error"]
     assert route_after_planner(out) == END
 

@@ -220,3 +220,32 @@ def is_ignored(rel: str, patterns: list[str]) -> bool:
 def rel_path(root: Path | str, full: Path | str) -> str:
     """Workspace-relative path with forward slashes, original case (for display/records)."""
     return os.path.relpath(str(full), os.path.realpath(str(root))).replace("\\", "/")
+
+
+# ─── SECRETS ────────────────────────────────────────────────
+
+import re as _re  # noqa: E402
+
+SECRET_PATTERNS = [
+    _re.compile(r"AKIA[0-9A-Z]{16}"),                                   # AWS access key id
+    _re.compile(r"AIza[0-9A-Za-z_\-]{35}"),                             # Google API key
+    _re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),                         # GitHub tokens
+    _re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"),                           # OpenAI/Anthropic-style
+    _re.compile(r"\bgsk_[A-Za-z0-9]{20,}"),                             # Groq
+    _re.compile(r"\blsv2_[A-Za-z0-9_]{20,}"),                           # LangSmith
+    _re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", _re.DOTALL),
+]
+_ASSIGN = _re.compile(r"(?i)((?:api[_-]?key|secret|token|password|passwd)[\"']?\s*[:=]\s*)([\"']?)([^\s\"']{8,})")
+
+
+def redact_secrets(text: str) -> str:
+    """Replace anything that looks like a credential with [REDACTED]."""
+    if not text:
+        return text
+    for p in SECRET_PATTERNS:
+        text = p.sub("[REDACTED]", text)
+    return _ASSIGN.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
+
+
+def contains_secret(text: str) -> bool:
+    return redact_secrets(text) != text

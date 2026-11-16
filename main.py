@@ -1,14 +1,17 @@
 import os
 import sys
 import json
+import time
 import argparse
 from dotenv import load_dotenv
 
 import config as nexura_config
 
 from langgraph.types import Command
+from core import metrics
 from core.orchestrator import build_graph
-from core.schemas import ProjectContext
+from core.runner import ResumeError, prepare_resume, start_run
+from core.state_manager import StateManager, make_checkpointer
 from core.task_manager import run_summary
 
 load_dotenv()
@@ -78,64 +81,61 @@ def _print_event(event):
 
 def main():
     parser = argparse.ArgumentParser(description="Nexura AI - Autonomous Coding Agent")
-    parser.add_argument("--prompt", type=str, required=True, help="Natural language request for the project")
-    parser.add_argument("--project", type=str, required=True, help="Project name (e.g., 'proj_test')")
+    parser.add_argument("--prompt", type=str, help="Natural language request for the project")
+    parser.add_argument("--project", type=str, help="Project name (e.g., 'proj_test')")
     parser.add_argument("--interactive", action="store_true", help="Enable human-in-the-loop mode")
-    
+    parser.add_argument("--resume", metavar="RUN_ID", help="Resume an unfinished run (done tasks are kept)")
+    parser.add_argument("--metrics", metavar="RUN_ID", help="Print metrics for a run and exit")
+
     args = parser.parse_args()
     nexura_config.configure_observability()
-    
-    workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
-    os.makedirs(workspace_path, exist_ok=True)
-    
-    project = ProjectContext(run_id=args.project, root=workspace_path)
-    
-    # Build the LangGraph pipeline
-    graph = build_graph(interactive=args.interactive)
-    
-    # Thread config for checkpointing + LangSmith metadata
+    sm = StateManager(nexura_config.DB_PATH)
+
+    if args.metrics:
+        print(json.dumps(metrics.compute(sm, args.metrics), indent=2))
+        return
+    if not args.resume and not (args.prompt and args.project):
+        parser.error("--prompt and --project are required (unless using --resume or --metrics)")
+
+    try:
+        if args.resume:
+            project, initial_state = prepare_resume(sm, args.resume, interactive=args.interactive)
+            thread_id = f"{project.run_id}-r{int(time.time())}"
+        else:
+            workspace_path = os.path.join(os.path.dirname(__file__), "workspace", args.project)
+            project, initial_state = start_run(sm, args.project, workspace_path, args.prompt, interactive=args.interactive)
+            thread_id = project.run_id
+    except ResumeError as e:
+        print(f"Cannot resume: {e}")
+        sys.exit(2)
+
+    graph = build_graph(interactive=args.interactive, checkpointer=make_checkpointer(nexura_config.CHECKPOINT_DB_PATH))
+
     mode_label = "interactive" if args.interactive else "autonomous"
     config = {
-        "configurable": {"thread_id": args.project, "project": project},
-        # LangSmith trace metadata — shows up in the dashboard
-        "metadata": {
-            "project": args.project,
-            "mode": mode_label,
-        },
-        "tags": ["nexura-ai", args.project, mode_label],
-    }
-    
-    # Initial state
-    initial_state = {
-        "messages": [],
-        "user_prompt": args.prompt,
-        "workspace_path": workspace_path,
-        "plan": None,
-        "tasks": [],
-        "current_task_index": 0,
-        "execution_history": [],
-        "is_interactive": args.interactive,
-        "plan_feedback": None,
-        "tool_calls_count": 0,
-        "task_status": {},
-        "task_errors": {},
-        "run_status": None,
-        "run_error": None,
-        "task_outcome": None,
-        "task_reason": None,
-        "replan_count": 0,
+        "configurable": {"thread_id": thread_id, "project": project},
+        "recursion_limit": 500,
+        # LangSmith trace metadata - shows up in the dashboard
+        "metadata": {"project": project.project_id, "run_id": project.run_id, "mode": mode_label},
+        "tags": ["nexura-ai", project.project_id, mode_label],
     }
 
-    print(f"Nexura AI -- Starting project: {args.project}")
+    print(f"Nexura AI -- project: {project.project_id}  run: {project.run_id}")
     print(f"Mode: {'Interactive (HITL)' if args.interactive else 'Autonomous'}\n")
-    
+
     try:
         values = run_graph(graph, initial_state, config)
+    except KeyboardInterrupt:
+        sm.update_run(project.run_id, "cancelled")
+        print(f"\nCancelled. Resume with: python main.py --resume {project.run_id}")
+        sys.exit(130)
     finally:
         project.processes.stop_all()
 
     exit_code = print_summary(values)
-    print(f"\n---> LangSmith Traces: https://smith.langchain.com/o/default/projects/p/{args.project}")
+    m = metrics.compute(sm, project.run_id)
+    print(f"Metrics: success_rate={m['task_success_rate']} retries={m['retries_per_task']} errors={m['error_types']} time={m['wall_time_s']}s")
+    print(f"Run id: {project.run_id}  (log: {project.run_dir / 'log.jsonl'})")
     sys.exit(exit_code)
 
 

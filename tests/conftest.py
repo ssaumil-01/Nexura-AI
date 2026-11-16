@@ -29,7 +29,7 @@ class FakeChatModel(BaseChatModel):
         if not self.script:
             raise AssertionError("FakeChatModel script exhausted")
         item = self.script.pop(0)
-        if isinstance(item, Exception):
+        if isinstance(item, BaseException):
             raise item
         return ChatResult(generations=[ChatGeneration(message=item)])
 
