@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 
 import config
-from agents.llm import TRANSIENT, backoff_delay
+from agents.llm import TRANSIENT, backoff_delay, quota_message
 from core.schemas import Acceptance, ExecutionPlan, Step  # noqa: F401  (re-exported for callers)
 from core.task_manager import validate_plan
 
@@ -166,6 +166,9 @@ class PlannerAgent:
                 return self.call_llm(prompt)
             except Exception as e:
                 text = str(e)
+                quota = quota_message(text)
+                if quota:
+                    raise RuntimeError(quota) from e
                 if attempt + 1 >= config.MAX_RETRIES or not TRANSIENT.search(text):
                     raise
                 wait = backoff_delay(attempt, text)

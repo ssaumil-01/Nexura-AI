@@ -53,6 +53,19 @@ TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTE
                        r"ConnectionError|ReadError|RemoteProtocolError", re.IGNORECASE)
 
 
+QUOTA = re.compile(r"PerDay|per day limit|limit exceeded on free tier", re.IGNORECASE)
+
+
+def quota_message(error_text: str) -> str | None:
+    """A DAILY/long quota exhaustion is not transient: waiting a few seconds will not help, so fail fast with a clear message."""
+    m = re.search(r"retryDelay['\": ]+(\d+(?:\.\d+)?)s", error_text)
+    delay = float(m.group(1)) if m else 0.0
+    if QUOTA.search(error_text) or delay > 300:
+        when = f" (resets in about {delay / 3600:.0f}h)" if delay > 3600 else ""
+        return f"LLM_QUOTA: the API quota is exhausted{when}. Check your plan/billing or try again later."
+    return None
+
+
 def is_rate_limit(error_text: str) -> bool:
     return bool(TRANSIENT.search(error_text))
 
@@ -83,6 +96,11 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
             return None, f"LLM_CONFIG: {e}"
         except Exception as e:
             err = str(e)
+            quota = quota_message(err)
+            if quota:
+                if on_log:
+                    on_log(role=role, prompt_version=prompt_version, model=model, result="quota_exhausted")
+                return None, quota
             if not is_rate_limit(err):
                 if on_log:
                     on_log(role=role, prompt_version=prompt_version, model=model, result="error")

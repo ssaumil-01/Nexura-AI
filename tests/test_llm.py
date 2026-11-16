@@ -49,3 +49,45 @@ def test_invoke_reports_persistent_overload_and_hard_errors_differently(monkeypa
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_UNAVAILABLE")
     monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("401 API key not valid")], calls=[]))
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_ERROR")
+
+
+GEMINI_DAILY_QUOTA = ("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota ... Generate content "
+                      "requests per day limit exceeded on Free Tier.', 'details': [{'violations': [{'quotaId': "
+                      "'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}]}, {'retryDelay': '36891s'}]}}")
+
+
+def test_daily_quota_exhaustion_fails_fast_with_a_clear_reason(monkeypatch):
+    """A free-tier daily limit used to be 'retried' for minutes; it must stop at once and say what happened."""
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    fake = FakeChatModel(script=[Exception(GEMINI_DAILY_QUOTA)] * 3, calls=[])
+    monkeypatch.setattr(llm, "_override", fake)
+    resp, failure = llm.invoke("coder", ["hi"], "1")
+    assert resp is None and failure.startswith("LLM_QUOTA") and "10h" in failure
+    assert sleeps == [] and len(fake.calls) == 1
+
+
+def test_short_rate_limits_are_still_retried(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    err = "429 RESOURCE_EXHAUSTED. {'retryDelay': '12s'}"
+    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception(err), tool_call_msg("task_complete", {"summary": "x"})], calls=[]))
+    resp, failure = llm.invoke("coder", ["hi"], "1")
+    assert failure is None and len(sleeps) == 1 and sleeps[0] >= 12
+
+
+def test_planner_reports_quota_exhaustion_immediately(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLANNER_MODEL_NAME", "m")
+    monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
+    monkeypatch.setattr(time, "sleep", lambda s: pytest.fail("must not sleep"))
+    from agents.planner import PlanError, PlannerAgent
+    p = PlannerAgent()
+    calls = []
+
+    def boom(prompt):
+        calls.append(1)
+        raise Exception(GEMINI_DAILY_QUOTA)
+    p.call_llm = boom
+    with pytest.raises(PlanError, match="LLM_QUOTA"):
+        p.plan("x", str(tmp_path))
+    assert len(calls) == 1
