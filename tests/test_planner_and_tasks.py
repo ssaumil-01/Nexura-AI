@@ -174,7 +174,7 @@ def test_validate_plan_flags_unrunnable_acceptance_commands():
 def test_planner_prompt_version_and_granularity():
     import config
     from agents.planner import PROMPT_TEMPLATE
-    assert config.PROMPT_VERSIONS["planner"] == "4" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
+    assert config.PROMPT_VERSIONS["planner"] == "5" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
 
 
 def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):
@@ -211,3 +211,44 @@ def test_http_status_without_any_way_to_find_a_url_is_still_invalid():
     from core.schemas import Acceptance
     with pytest.raises(ValueError, match="requires url"):
         Acceptance(type="http_status", start_command="python app.py")
+
+
+def _plan_json(steps):
+    return json.dumps({"project_id": "p", "goal": "g", "steps": steps})
+
+
+def test_repair_drops_only_the_unrunnable_checks_and_warns(planner):
+    """After 3 bad answers the plan is salvaged: unusable checks are dropped (visibly), good ones stay."""
+    s1 = {**step(1), "acceptance": [{"type": "file_exists", "path": "app.py"},
+                                    {"type": "command_ok", "command": "curl -s http://127.0.0.1:8000/health"}]}
+    s2 = {**step(2, [1]), "acceptance": [{"type": "command_ok", "command": "pip install -r requirements.txt"},
+                                         {"type": "http_status", "start_command": "python app.py"}]}   # no url, no port: invalid
+    bad = _plan_json([s1, s2])
+    planner.replies = [bad, bad, bad]
+    out = planner.plan("x", planner.path)
+    assert [a.type for a in out.steps[0].acceptance] == ["file_exists"]
+    assert out.steps[1].acceptance == [] and out.steps[1].documentation_only        # default verification only
+    joined = "\n".join(planner.last_warnings)
+    assert "curl" in joined and "pip install" in joined and "default verification only" in joined
+    assert len(planner.prompts) == 3
+
+
+def test_repair_does_not_rescue_structurally_broken_plans(planner):
+    from agents.planner import PlanError
+    broken = _plan_json([step(1), step(3)])   # ids not sequential
+    planner.replies = [broken, broken, broken]
+    with pytest.raises(PlanError):
+        planner.plan("x", planner.path)
+
+
+def test_planner_node_records_warnings_in_the_plan(monkeypatch, planner):
+    import agents.planner as ap
+    from core.orchestrator import planner_node
+    from core.schemas import ProjectContext
+    bad = _plan_json([{**step(1), "acceptance": [{"type": "command_ok", "command": "cat a.txt"}, {"type": "file_exists", "path": "a.txt"}]}])
+    planner.replies = [bad, bad, bad]
+    monkeypatch.setattr(ap.PlannerAgent, "__new__", lambda cls: planner)
+    monkeypatch.setattr(ap.PlannerAgent, "__init__", lambda self: None)
+    cfg = {"configurable": {"project": ProjectContext(run_id="r", root=planner.path)}}
+    out = planner_node({"user_prompt": "x", "workspace_path": planner.path}, cfg)
+    assert any("cat a.txt" in w for w in out["plan"]["warnings"]) and out["tasks"][0]["acceptance"][0]["type"] == "file_exists"

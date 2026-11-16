@@ -22,9 +22,10 @@ def get_llm(model_name: str):
     """Factory function to initialize the correct LLM provider."""
     if any(m in model_name.lower() for m in ["llama", "mixtral", "gemma"]):
         from langchain_groq import ChatGroq
-        return ChatGroq(model=model_name, temperature=config.TEMPERATURE)
+        return ChatGroq(model=model_name, temperature=config.TEMPERATURE, request_timeout=config.LLM_TIMEOUT_S, max_retries=1)
     from langchain_google_genai import ChatGoogleGenerativeAI
-    return ChatGoogleGenerativeAI(model=model_name, temperature=config.TEMPERATURE)
+    # the library defaults are NO timeout and 6 internal retries; we apply our own bounded backoff instead
+    return ChatGoogleGenerativeAI(model=model_name, temperature=config.TEMPERATURE, timeout=config.LLM_TIMEOUT_S, max_retries=1)
 
 
 def model_for(role: str) -> str:
@@ -47,8 +48,13 @@ def _short(text: Any, n: int = 200) -> str:
     return text if len(text) <= n else text[:n] + "..."
 
 
+# Errors worth retrying with backoff: rate limits, server overload (5xx / "high demand"), timeouts
+TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|timed? ?out|overloaded|"
+                       r"ConnectionError|ReadError|RemoteProtocolError", re.IGNORECASE)
+
+
 def is_rate_limit(error_text: str) -> bool:
-    return "429" in error_text or "RESOURCE_EXHAUSTED" in error_text
+    return bool(TRANSIENT.search(error_text))
 
 
 def backoff_delay(attempt: int, error_text: str) -> float:

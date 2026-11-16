@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +72,18 @@ def drive(graph, state: dict, cfg: dict, deadline: float) -> tuple[dict, int]:
             approvals += 1
             inp = Command(resume={"decision": "approve"})
     return graph.get_state(cfg).values, approvals
+
+
+def run_task_limited(task: dict, base: Path, data: Path, args) -> dict:
+    """Hard per-task limit: a stuck task must not stall the whole eval (the worker thread is abandoned, not killed)."""
+    box: dict = {}
+    t = threading.Thread(target=lambda: box.update(r=run_task(task, base, data, args)), daemon=True)
+    t.start()
+    t.join(args.timeout + 120)
+    if t.is_alive():
+        return {"id": task["id"], "title": task["title"], "passed": False, "error": f"hard timeout after {args.timeout + 120}s",
+                "time_s": args.timeout + 120}
+    return box["r"]
 
 
 def run_task(task: dict, base: Path, data: Path, args) -> dict:
@@ -152,7 +165,7 @@ def main() -> int:
     results = []
     for t in tasks:
         print(f"\n=== {t['id']}: {t['title']} ===")
-        r = run_task(t, work / "ws", work / "data", args)
+        r = run_task_limited(t, work / "ws", work / "data", args)
         print(f"    -> {'PASS' if r['passed'] else 'FAIL'}  status={r.get('run_status')}  {r['time_s']}s  {r.get('error', '')}")
         results.append(r)
     shutil.rmtree(work, ignore_errors=True)

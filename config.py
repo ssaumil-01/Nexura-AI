@@ -25,6 +25,7 @@ CONTEXT_CHAR_BUDGET = 60_000
 COMMAND_TIMEOUT_S = 60
 INSTALL_TIMEOUT_S = 180
 TEMPERATURE = 0.2
+LLM_TIMEOUT_S = int(os.getenv("NEXURA_LLM_TIMEOUT_S", "120"))   # per model request; a stalled connection must not hang a run
 
 # --- Safety ------------------------------------------------
 ALLOWED_COMMANDS = ["python", "python3", "py", "pip", "pip3", "node", "npm", "npx", "uvicorn", "pytest", "streamlit", "flask"]
@@ -48,7 +49,7 @@ except ValueError:
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
 # --- Prompts / environment hints ---------------------------
-PROMPT_VERSIONS = {"planner": "4", "coder": "2", "debugger": "1"}
+PROMPT_VERSIONS = {"planner": "5", "coder": "2", "debugger": "1"}
 SHELL_HINT = os.getenv("NEXURA_SHELL_HINT", "Windows PowerShell" if os.name == "nt" else "POSIX sh")
 
 

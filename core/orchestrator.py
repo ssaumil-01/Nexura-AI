@@ -91,7 +91,8 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
     print("\n--- [1] Re-running Planner with feedback ---" if feedback and previous_plan else "\n--- [1] Running Planner ---")
 
     try:
-        plan = PlannerAgent().plan(user_prompt=state["user_prompt"], project_path=str(plan_dir),
+        planner = PlannerAgent()
+        plan = planner.plan(user_prompt=state["user_prompt"], project_path=str(plan_dir),
                                    feedback=feedback, previous_plan=previous_plan)
     except PlanError as e:
         print(f"[Planner] FAILED: {e}")
@@ -99,6 +100,7 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
         return {"run_status": "failed", "run_error": f"Planner failed: {e}"}
 
     plan_dict = plan.model_dump()
+    plan_dict["warnings"] = list(getattr(planner, "last_warnings", []) or [])   # e.g. acceptance checks that had to be dropped
     tasks = plan_dict.get("steps", [])
     print(f"[Planner] Generated {len(tasks)} tasks for project: {plan_dict.get('project_id', 'unknown')}")
     if ctx.state_manager is not None:
@@ -124,6 +126,8 @@ def review_plan_node(state: NexuraState, config: RunnableConfig) -> Command:
     plan, tasks = state["plan"], state["tasks"]
     print("\n" + "=" * 50 + "\nGENERATED PLAN\n" + "=" * 50)
     print(f"Project: {plan.get('project_id', 'unknown')}\nGoal: {plan.get('goal', '')}\n\nSteps ({len(tasks)}):")
+    for w in plan.get("warnings", []):
+        print(f"  WARNING: {w}")
     for task in tasks:
         deps = task.get("dependencies", [])
         print(f"  {task['step_id']}. {task['title']}" + (f" (depends on: {deps})" if deps else ""))

@@ -10,13 +10,12 @@ from google import genai
 from google.genai import types
 
 import config
-from agents.llm import backoff_delay
+from agents.llm import TRANSIENT, backoff_delay
 from core.schemas import Acceptance, ExecutionPlan, Step  # noqa: F401  (re-exported for callers)
 from core.task_manager import validate_plan
 
 load_dotenv()
 
-TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|timed? ?out|overloaded", re.IGNORECASE)
 PLAN_ATTEMPTS = 3  # first try + 2 retries with the error fed back
 
 
@@ -70,8 +69,11 @@ Each step must represent EXACTLY ONE action.
    - {{"type": "output_contains", "command": "python main.py 2+2", "text": "4"}}
    - {{"type": "http_status", "start_command": "python app.py", "url": "http://127.0.0.1:5000/health", "expect": 200, "wait_s": 10}}
    For http_status the "url" field is REQUIRED (the full http://127.0.0.1:PORT/path to request; use the port from start_command).
-   Commands are ONE program (python, pip, node, npm, npx, uvicorn, pytest, streamlit, flask) with no shell operators (| & ; > <)
-   outside quotes. Run tests with `python -m pytest -q` (not bare `pytest`), so the project root is importable.
+   Commands are ONE program from EXACTLY this list: python, python3, py, pip, node, npm, npx, uvicorn, pytest, streamlit, flask.
+   NOT available (never use them in checks): curl, wget, cat, grep, ls, dir, echo, type, rm, sh, bash, powershell.
+   - To check a web endpoint use an http_status check (never curl). To check file contents use
+     {{"type": "output_contains", "command": "python -c \"print(open('index.html').read())\"", "text": "<h1"}}.
+   - No shell operators (| & ; > <) outside quotes. Run tests with `python -m pytest -q` (not bare `pytest`).
    Acceptance checks must NEVER install packages (no `pip install`/`npm install`): installing is part of the step's work, not a check.
    Only a step that purely writes documentation may use "acceptance": [] together with "documentation_only": true.
 
@@ -139,7 +141,8 @@ class PlannerAgent:
         if not self.api_key:
             print("Warning: Missing GOOGLE_API_KEY in .env")
 
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        self.client = (genai.Client(api_key=self.api_key, http_options=types.HttpOptions(timeout=config.LLM_TIMEOUT_S * 1000))
+                       if self.api_key else None)
 
     def call_llm(self, prompt: str) -> str:
         """Call Gemini with a JSON response schema so the output is structured."""
@@ -194,7 +197,8 @@ USER FEEDBACK
 Please generate an IMPROVED plan that addresses the user's feedback above.
 """
 
-        last_error = ""
+        last_error, last_raw = "", ""
+        self.last_warnings: list[str] = []
         for attempt in range(PLAN_ATTEMPTS):
             attempt_prompt = prompt if not last_error else prompt + f"""
 
@@ -207,7 +211,7 @@ Reminder of the required fields per acceptance type: file_exists(path), syntax_o
 output_contains(command, text), http_status(url, and usually start_command). Return corrected JSON only.
 """
             try:
-                raw = self._call_with_retry(attempt_prompt)
+                raw = last_raw = self._call_with_retry(attempt_prompt)
                 plan_obj = ExecutionPlan.model_validate_json(strip_fences(raw))
                 problems = validate_plan(plan_obj)
                 if problems:
@@ -224,7 +228,48 @@ output_contains(command, text), http_status(url, and usually start_command). Ret
             print(f"Plan (Markdown) saved to: {md_path}")
             return plan_obj
 
+        repaired = self._repair(last_raw)
+        if repaired is not None:
+            md_path, json_path = self.save_plan(repaired, project_path)
+            print(f"Plan (JSON) saved to: {json_path}")
+            return repaired
         raise PlanError(f"Planner produced no valid plan after {PLAN_ATTEMPTS} attempts: {last_error[:300]}")
+
+    def _repair(self, raw: str) -> ExecutionPlan | None:
+        """Last resort after the retries: drop ONLY the acceptance checks that are malformed or can never run, keep the rest of the
+        plan, and say so (plan.warnings). A step left with no checks falls back to default verification (syntax of changed files
+        + every command it ran must exit 0), which is weaker but honest. Returns None if the plan is broken in any other way."""
+        import json
+        try:
+            data = json.loads(strip_fences(raw))
+            warnings = []
+            for step in data.get("steps", []):
+                kept = []
+                for entry in step.get("acceptance") or []:
+                    try:
+                        acc = Acceptance.model_validate(entry)
+                        probe = Step(step_id=1, title="t", description="d", acceptance=[acc])
+                        problems = validate_plan(ExecutionPlan(project_id="p", goal="g", steps=[probe]))
+                        problems = [p for p in problems if "no acceptance" not in p]
+                    except Exception as e:
+                        problems = [str(e).splitlines()[-1] if str(e) else "invalid"]
+                    if problems:
+                        warnings.append(f"step {step.get('step_id')}: dropped acceptance check {json.dumps(entry)[:120]}: {problems[0][:160]}")
+                    else:
+                        kept.append(entry)
+                step["acceptance"] = kept
+                if not kept and not step.get("documentation_only"):
+                    step["documentation_only"] = True   # no usable check: default verification applies; flagged below
+                    warnings.append(f"step {step.get('step_id')}: no usable acceptance check; default verification only")
+            plan = ExecutionPlan.model_validate(data)
+            if validate_plan(plan) or not warnings:
+                return None
+            self.last_warnings = warnings
+            for w in warnings:
+                print(f"[Planner] WARNING: {w}")
+            return plan
+        except Exception:
+            return None
 
     def save_plan(self, plan: ExecutionPlan, project_path: str) -> tuple[str, str]:
         """

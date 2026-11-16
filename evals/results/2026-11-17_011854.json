@@ -1,0 +1,516 @@
+{
+  "date": "2026-11-17T01:18:54",
+  "commit": "ecaa0bc",
+  "fake_llm": false,
+  "coder_model": "gemini-3.1-flash-lite-preview",
+  "planner_model": "gemini-3.1-flash-lite",
+  "approval_level": "auto_within_limits",
+  "prompt_versions": {
+    "planner": "3",
+    "coder": "2",
+    "debugger": "1"
+  },
+  "summary": {
+    "tasks": 14,
+    "passed": 10,
+    "pass_rate": 0.714,
+    "retries": 24,
+    "tool_calls": 153,
+    "approvals": 6,
+    "time_s": 1088.0,
+    "tokens": 423484
+  },
+  "results": [
+    {
+      "id": "calc_cli",
+      "title": "Python CLI calculator",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 2,
+      "error_types": {
+        "rejected:NOT_AN_INSTALL": 1,
+        "rejected:USE_INSTALL_DEPENDENCY": 1
+      },
+      "tool_calls": 19,
+      "llm_calls": 21,
+      "approvals": 1,
+      "tokens": 65788,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "calc.py: exists"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python calc.py 2+3*4` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python calc.py (1+2)*3` output contains text"
+        }
+      ],
+      "time_s": 128.6
+    },
+    {
+      "id": "fastapi_users",
+      "title": "FastAPI health and users endpoints",
+      "passed": false,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 1,
+      "retries": 4,
+      "error_types": {
+        "rejected:USE_INSTALL_DEPENDENCY": 1,
+        "test_failure": 3
+      },
+      "tool_calls": 7,
+      "llm_calls": 8,
+      "approvals": 1,
+      "tokens": 18749,
+      "task_errors": {
+        "2": "VERIFICATION_FAILED: - command_ok: `pip install -r requirements.txt` failed (USE_INSTALL_DEPENDENCY, exit=None): Install packages with the install_dependency tool."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "app.py: missing"
+        },
+        {
+          "type": "http_status",
+          "ok": false,
+          "detail": "http://127.0.0.1:8765/health expected 200, got Endpoint check failed. The server might not be running or the URL is incorrect. Error: HTTPConnectionPool(host='127.0.0.1', port=8765): Max retries exceeded with url: /health (Caused by NewConnectionE. Server output: [process 9a8826af: exited with code "
+        },
+        {
+          "type": "http_status",
+          "ok": false,
+          "detail": "http://127.0.0.1:8766/users expected 200, got Endpoint check failed. The server might not be running or the URL is incorrect. Error: HTTPConnectionPool(host='127.0.0.1', port=8766): Max retries exceeded with url: /users (Caused by NewConnectionEr. Server output: [process 040bfcdc: exited with code 3"
+        }
+      ],
+      "time_s": 109.6
+    },
+    {
+      "id": "flask_hello",
+      "title": "Flask hello app",
+      "passed": true,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 1,
+      "retries": 4,
+      "error_types": {
+        "rejected:NOT_ALLOWED": 1,
+        "unknown": 3
+      },
+      "tool_calls": 11,
+      "llm_calls": 12,
+      "approvals": 1,
+      "tokens": 28569,
+      "task_errors": {
+        "2": "VERIFICATION_FAILED: - output_contains: `cat requirements.txt` expected output containing 'flask'; exit=NOT_ALLOWED; got: 'cat' is not an allowed command. Allowed: python, python3, py, pip, pip3, node, npm, npx, uvicorn, pytest, streamlit, flask"
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "app.py: exists"
+        },
+        {
+          "type": "http_status",
+          "ok": true,
+          "detail": "http://127.0.0.1:8767/ -> 200"
+        }
+      ],
+      "time_s": 103.8
+    },
+    {
+      "id": "static_site",
+      "title": "Static HTML/CSS/JS page",
+      "passed": true,
+      "run_status": "completed_with_failures",
+      "tasks_total": 3,
+      "tasks_done": 1,
+      "retries": 4,
+      "error_types": {
+        "rejected:NOT_ALLOWED": 1,
+        "unknown": 3
+      },
+      "tool_calls": 11,
+      "llm_calls": 12,
+      "approvals": 0,
+      "tokens": 30028,
+      "task_errors": {
+        "2": "VERIFICATION_FAILED: - output_contains: `grep -c '<link rel=\"stylesheet\" href=\"style.css\">' index.html` expected output containing '1'; exit=NOT_ALLOWED; got: 'grep' is not an allowed command. Allowed: python, python3, py, pip, pip3, node, npm, npx, uvicorn, pytest, streamlit, flask"
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "index.html: exists"
+        },
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "style.css: exists"
+        },
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "script.js: exists"
+        },
+        {
+          "type": "syntax_ok",
+          "ok": true,
+          "detail": "script.js: ok"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('index.html').read().count('style.css'))\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('index.html').read().count('script.js'))\"` output contains text"
+        }
+      ],
+      "time_s": 47.4
+    },
+    {
+      "id": "streamlit_app",
+      "title": "Streamlit data app",
+      "passed": false,
+      "run_status": "completed_with_failures",
+      "tasks_total": 4,
+      "tasks_done": 1,
+      "retries": 4,
+      "error_types": {
+        "rejected:USE_INSTALL_DEPENDENCY": 1,
+        "test_failure": 3
+      },
+      "tool_calls": 8,
+      "llm_calls": 9,
+      "approvals": 2,
+      "tokens": 30014,
+      "task_errors": {
+        "2": "VERIFICATION_FAILED: - command_ok: `pip install -r requirements.txt` failed (USE_INSTALL_DEPENDENCY, exit=None): Install packages with the install_dependency tool."
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": false,
+          "detail": "app.py: missing"
+        },
+        {
+          "type": "syntax_ok",
+          "ok": false,
+          "detail": "app.py: ERROR: File 'app.py' does not exist."
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"print('streamlit' in open('app.py').read())\"` expected output containing 'True'; exit=1; got: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    print('streamlit' in open('app.py').read())\n                         ~~~~^^^^^^^^^^\nFileNotFoundError: [Errno 2] No "
+        },
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "requirements.txt: exists"
+        }
+      ],
+      "time_s": 215.9
+    },
+    {
+      "id": "algo_tests",
+      "title": "Algorithm with unit tests",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 2,
+      "error_types": {
+        "rejected:NOT_AN_INSTALL": 1,
+        "rejected:USE_INSTALL_DEPENDENCY": 1
+      },
+      "tool_calls": 13,
+      "llm_calls": 15,
+      "approvals": 1,
+      "tokens": 40111,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "sorting.py: exists"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import sorting; print(sorting.merge_sort([3, 1, 2, 3]))\"` output contains text"
+        },
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python -m pytest -q` exited 0"
+        }
+      ],
+      "time_s": 64.0
+    },
+    {
+      "id": "node_script",
+      "title": "Node script",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 2,
+      "tasks_done": 2,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 6,
+      "llm_calls": 6,
+      "approvals": 0,
+      "tokens": 12819,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`node sum.js 1 2 3` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`node sum.js 10 20` output contains text"
+        }
+      ],
+      "time_s": 15.8
+    },
+    {
+      "id": "json_config",
+      "title": "JSON config parser",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 4,
+      "tasks_done": 4,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 15,
+      "llm_calls": 15,
+      "approvals": 0,
+      "tokens": 42360,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import config_parser; print(config_parser.load_config('config.json')['port'])\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import config_parser; print(config_parser.load_config('config.json')['host'])\"` output contains text"
+        }
+      ],
+      "time_s": 106.9
+    },
+    {
+      "id": "package_bugfix",
+      "title": "Fix a bug in a multi-file package",
+      "passed": false,
+      "run_status": "failed",
+      "tasks_total": 0,
+      "tasks_done": 0,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 0,
+      "llm_calls": 0,
+      "approvals": 0,
+      "tokens": null,
+      "task_errors": {},
+      "run_error": "Planner failed: Planner LLM call failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}",
+      "checks": [
+        {
+          "type": "command_ok",
+          "ok": false,
+          "detail": "`python -m pytest -q` failed (COMMAND_FAILED, exit=1): F.                                                                       [100%]\n================================== FAILURES ===================================\n__________________________________ test_mean __________________________________\n    d"
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import mathlib; print(mathlib.mean([2, 4]))\"` expected output containing '3'; exit=0; got: 2.0"
+        }
+      ],
+      "time_s": 6.7
+    },
+    {
+      "id": "add_function",
+      "title": "Add a function to an existing file",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 14,
+      "llm_calls": 14,
+      "approvals": 0,
+      "tokens": 33346,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import utils; print(utils.slugify('Hello  World!'))\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import utils; print(utils.add(1, 2))\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import utils; print(utils.shout('hi'))\"` output contains text"
+        }
+      ],
+      "time_s": 90.7
+    },
+    {
+      "id": "todo_cli",
+      "title": "To-do CLI with JSON persistence",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 12,
+      "llm_calls": 12,
+      "approvals": 0,
+      "tokens": 32836,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python todo.py add buy-milk` exited 0"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python todo.py list` output contains text"
+        }
+      ],
+      "time_s": 60.0
+    },
+    {
+      "id": "csv_report",
+      "title": "CSV report script",
+      "passed": true,
+      "run_status": "completed_with_failures",
+      "tasks_total": 3,
+      "tasks_done": 2,
+      "retries": 4,
+      "error_types": {
+        "unknown": 4
+      },
+      "tool_calls": 12,
+      "llm_calls": 12,
+      "approvals": 0,
+      "tokens": 25858,
+      "task_errors": {
+        "3": "VERIFICATION_FAILED: - output_contains: `python report.py` expected output containing 'North: 150'; exit=0; got: north: 150.0\nsouth: 250.0"
+      },
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python report.py` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python report.py` output contains text"
+        }
+      ],
+      "time_s": 44.6
+    },
+    {
+      "id": "validators",
+      "title": "Input validators",
+      "passed": false,
+      "run_status": "completed",
+      "tasks_total": 4,
+      "tasks_done": 4,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 17,
+      "llm_calls": 17,
+      "approvals": 0,
+      "tokens": 44213,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"import validators as v; print(v.is_email('a@b.co'), v.is_email('a@b'))\"` output contains text"
+        },
+        {
+          "type": "output_contains",
+          "ok": false,
+          "detail": "`python -c \"import validators as v; print(v.is_phone('+1 555-123-4567'), v.is_phone('12'))\"` expected output containing 'True False'; exit=0; got: False False"
+        }
+      ],
+      "time_s": 63.5
+    },
+    {
+      "id": "tests_for_existing",
+      "title": "Write tests for existing code",
+      "passed": true,
+      "run_status": "completed",
+      "tasks_total": 3,
+      "tasks_done": 3,
+      "retries": 0,
+      "error_types": {},
+      "tool_calls": 8,
+      "llm_calls": 8,
+      "approvals": 0,
+      "tokens": 18793,
+      "task_errors": {},
+      "run_error": null,
+      "checks": [
+        {
+          "type": "file_exists",
+          "ok": true,
+          "detail": "test_shapes.py: exists"
+        },
+        {
+          "type": "command_ok",
+          "ok": true,
+          "detail": "`python -m pytest -q` exited 0"
+        },
+        {
+          "type": "output_contains",
+          "ok": true,
+          "detail": "`python -c \"print(open('shapes.py').read().count('def '))\"` output contains text"
+        }
+      ],
+      "time_s": 30.5
+    }
+  ]
+}
