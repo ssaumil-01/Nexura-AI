@@ -251,6 +251,20 @@ def rel_path(root: Path | str, full: Path | str) -> str:
     return os.path.relpath(str(full), os.path.realpath(str(root))).replace("\\", "/")
 
 
+def relativize(text: str, root: Path | str) -> str:
+    """Rewrite absolute workspace paths in free text (e.g. a traceback) as workspace-relative: logs and prompts never carry the root."""
+    if not text:
+        return text
+    forms = {str(root), os.path.realpath(str(root))}
+    forms |= {f.replace("\\", "/") for f in forms}
+    for form in sorted(forms, key=len, reverse=True):
+        base = re.escape(form.rstrip("\\/"))
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        text = re.sub(base + r"[\\/]", "", text, flags=flags)     # <root>/a/b.py -> a/b.py
+        text = re.sub(base + r"(?![\w.-])", ".", text, flags=flags)  # the root itself -> .
+    return text
+
+
 # ─── SECRETS ────────────────────────────────────────────────
 
 import re as _re  # noqa: E402

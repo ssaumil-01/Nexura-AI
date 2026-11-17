@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from core.safety import SafetyError, rel_path, resolve_in_root
+from core.safety import SafetyError, rel_path, relativize, resolve_in_root
 from core.schemas import Action, ExecResult, FileChange, ProjectContext
 from core.validator import MUTATING
 
@@ -147,7 +147,13 @@ def _parse(name: str, out: str) -> dict:
 # ─── public API ─────────────────────────────────────────────
 
 def run(action: Action, ctx: ProjectContext, task_id: int = 0) -> ExecResult:
-    """Execute one (already validated) Action. Never raises."""
+    """Execute one (already validated) Action. Never raises. Output never contains the absolute workspace path."""
+    res = _run(action, ctx, task_id)
+    res.stdout, res.stderr = relativize(res.stdout, ctx.root), relativize(res.stderr, ctx.root)
+    return res
+
+
+def _run(action: Action, ctx: ProjectContext, task_id: int) -> ExecResult:
     t0 = time.monotonic()
     try:
         if not ctx.trusted and action.action in MUTATING:   # defence in depth: the validator already rejects these
