@@ -91,3 +91,11 @@ def test_planner_reports_quota_exhaustion_immediately(tmp_path, monkeypatch):
     with pytest.raises(PlanError, match="LLM_QUOTA"):
         p.plan("x", str(tmp_path))
     assert len(calls) == 1
+
+
+def test_planner_client_uses_v1beta_so_preview_models_work(monkeypatch):
+    monkeypatch.setenv("PLANNER_MODEL_NAME", "m")
+    monkeypatch.setenv("GOOGLE_API_KEY", "dummy")
+    from agents.planner import PlannerAgent
+    opts = PlannerAgent().client._api_client._http_options
+    assert opts.api_version == "v1beta"

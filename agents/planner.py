@@ -141,7 +141,7 @@ class PlannerAgent:
         if not self.api_key:
             print("Warning: Missing GOOGLE_API_KEY in .env")
 
-        self.client = (genai.Client(api_key=self.api_key, http_options=types.HttpOptions(timeout=config.LLM_TIMEOUT_S * 1000))
+        self.client = (genai.Client(api_key=self.api_key, http_options=types.HttpOptions(timeout=config.LLM_TIMEOUT_S * 1000, api_version="v1beta"))  # v1 rejects preview models
                        if self.api_key else None)
 
     def call_llm(self, prompt: str) -> str:
