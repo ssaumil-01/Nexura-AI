@@ -13,6 +13,7 @@ from core.runner import DirtyWorkspace, start_run, undo
 from core.schemas import Action, ProjectContext
 from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 from core.task_manager import load_tasks
+from tests.conftest import ALWAYS_OK
 
 
 def git(root, *a):
@@ -25,7 +26,7 @@ def repo_state(root):
 
 
 def plan_of(*titles):
-    steps = [{"step_id": i + 1, "title": t, "description": "d", "dependencies": [], "acceptance": []} for i, t in enumerate(titles)]
+    steps = [{"step_id": i + 1, "title": t, "description": "d", "dependencies": [], "acceptance": ALWAYS_OK} for i, t in enumerate(titles)]
     return {"project_id": "p", "goal": "g", "steps": steps}
 
 

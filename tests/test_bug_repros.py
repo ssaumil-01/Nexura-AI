@@ -9,12 +9,12 @@ from langgraph.types import Command
 
 import config as app_config
 from core.schemas import ProjectContext
-from tests.conftest import tool_call_msg
+from tests.conftest import ALWAYS_OK, tool_call_msg
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = {"project_id": "p", "goal": "g", "steps": [
-    {"step_id": 1, "title": "t1", "description": "d1", "dependencies": []},
-    {"step_id": 2, "title": "t2", "description": "d2", "dependencies": []},
+    {"step_id": 1, "title": "t1", "description": "d1", "dependencies": [], "acceptance": ALWAYS_OK},
+    {"step_id": 2, "title": "t2", "description": "d2", "dependencies": [], "acceptance": ALWAYS_OK},
 ]}
 
 

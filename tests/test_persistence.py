@@ -13,11 +13,11 @@ from core.safety import redact_secrets
 from core.schemas import FileChange
 from core.state_manager import StateManager, make_checkpointer
 from core.task_manager import load_tasks, render_plan_md
-from tests.conftest import tool_call_msg
+from tests.conftest import ALWAYS_OK, tool_call_msg
 
 PLAN = {"project_id": "p", "goal": "g", "steps": [
     {"step_id": 1, "title": "first", "description": "d1", "dependencies": [], "acceptance": [{"type": "file_exists", "path": "a.txt"}]},
-    {"step_id": 2, "title": "second", "description": "d2", "dependencies": [1], "acceptance": []}]}
+    {"step_id": 2, "title": "second", "description": "d2", "dependencies": [1], "acceptance": ALWAYS_OK}]}
 
 
 @pytest.fixture

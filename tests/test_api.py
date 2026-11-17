@@ -10,6 +10,7 @@ import config
 import server
 from core.state_manager import StateManager, make_checkpointer
 from core.task_manager import load_tasks
+from tests.conftest import ALWAYS_OK
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -22,7 +23,7 @@ def msg(*calls):
 
 def plan_of(*titles):
     return {"project_id": "p", "goal": "g", "steps": [
-        {"step_id": i + 1, "title": t, "description": "d", "dependencies": [], "acceptance": []} for i, t in enumerate(titles)]}
+        {"step_id": i + 1, "title": t, "description": "d", "dependencies": [], "acceptance": ALWAYS_OK} for i, t in enumerate(titles)]}
 
 
 @pytest.fixture

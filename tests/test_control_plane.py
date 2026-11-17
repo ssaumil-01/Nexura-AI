@@ -13,7 +13,7 @@ from core.context_builder import build_context
 from core.error_classifier import classify
 from core.retry_manager import decide
 from core.schemas import Action, ProjectContext
-from tests.conftest import tool_call_msg
+from tests.conftest import ALWAYS_OK, tool_call_msg
 from tests.test_bug_repros import done, g, values  # noqa: F401  (fixtures/helpers)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -164,6 +164,12 @@ def test_verify_default_checks_syntax_and_last_command_result(ctx, workspace):
     assert not verification.verify(task(), ctx, [], cmds[::-1]).ok
 
 
+def test_verify_with_nothing_to_check_fails(ctx):
+    """No acceptance checks, no changed files, no commands: nothing was verified, so the task is not done."""
+    r = verification.verify(task(), ctx, [], [])
+    assert not r.ok and r.checks[0].type == "nothing_verified"
+
+
 # ─── retry manager / classifier ─────────────────────────────
 
 def test_retry_decisions():
@@ -197,10 +203,20 @@ def create_buggy_and_complete():
 
 def test_invalid_action_rejected_then_retry_succeeds(g, fake_llm, workspace):  # noqa: F811
     g.holder["plan"] = one_step([])
-    fake_llm.script[:] = [tool_call_msg("create_file", {"target_file": "../evil.py", "content": "1"}, "a"), *done(1)]
+    fake_llm.script[:] = [tool_call_msg("create_file", {"target_file": "../evil.py", "content": "1"}, "a"),
+                          tool_call_msg("create_file", {"target_file": "ok.py", "content": "x = 1\n"}, "b"), *done(1)]
     v = values(g())
     assert v["task_status"] == {"1": "done"} and not (workspace.parent / "evil.py").exists()
     assert "OUTSIDE_ROOT" in str(fake_llm.calls[1][-1].content)   # rejection was fed back to the agent
+
+
+def test_rejected_write_then_done_is_not_verified(g, fake_llm, workspace):  # noqa: F811
+    """No checks, the only write was rejected, then task_complete: nothing was verified, so the task must not be 'done'."""
+    g.holder["plan"] = one_step([])
+    fake_llm.script[:] = [tool_call_msg("create_file", {"target_file": "../evil.py", "content": "1"}, "a"), *done(1),
+                          *[tool_call_msg("list_directory", {"target_dir": "."}, f"l{i}") for i in range(20)]]
+    v = values(g())
+    assert v["task_status"] == {"1": "failed"} and v["run_status"] != "completed"
 
 
 def test_repeated_rejections_fail_the_task(g, fake_llm):  # noqa: F811
@@ -233,7 +249,7 @@ def test_task_complete_is_only_a_request(g, fake_llm):  # noqa: F811
 def test_repeated_failure_marks_failed_and_run_completed_with_failures(g, fake_llm, workspace, monkeypatch):  # noqa: F811
     monkeypatch.setattr(config, "FAILURE_POLICY", "continue")
     plan = one_step(CMD_OK)
-    plan["steps"].append({"step_id": 2, "title": "other", "description": "d", "dependencies": [], "acceptance": []})
+    plan["steps"].append({"step_id": 2, "title": "other", "description": "d", "dependencies": [], "acceptance": ALWAYS_OK})
     g.holder["plan"] = plan
     useless = [tool_call_msg("run_command", {"command": "python hello.py"}, f"r{i}") for i in range(3)]
     fake_llm.script[:] = [create_buggy_and_complete(), *useless, *done(1)]

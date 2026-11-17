@@ -36,6 +36,11 @@ class FakeChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=item)])
 
 
+# A check that always passes: for tests of pipeline mechanics whose scripted coder changes nothing
+# (a step with no checks and no changes is "nothing verified" and fails).
+ALWAYS_OK = [{"type": "command_ok", "command": 'python -c "print(1)"'}]
+
+
 def tool_call_msg(name: str, args: dict, call_id: str = "c1", content: str = "") -> AIMessage:
     return AIMessage(content=content, tool_calls=[{"name": name, "args": args, "id": call_id}])
 
@@ -63,3 +68,22 @@ def git_repo(workspace) -> Path:
     git("add", "-A")
     git("commit", "-qm", "init")
     return workspace
+
+
+# ─── slow tests (end-to-end eval runs): skipped locally unless --runslow; CI and scripts/check.py pass it ───
+
+def pytest_addoption(parser):
+    parser.addoption("--runslow", action="store_true", default=False, help="also run tests marked slow")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: end-to-end eval runs (minutes); run with --runslow")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--runslow"):
+        return
+    skip = pytest.mark.skip(reason="slow: run with --runslow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)

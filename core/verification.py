@@ -86,4 +86,7 @@ def verify(task: dict, ctx: ProjectContext, changed_files: list[str], command_re
             last[c["command"]] = c["exit_code"]
         checks += [CheckResult(type="command_ok", ok=code == 0, detail=f"`{cmd}` " + ("exited 0" if code == 0 else f"last run failed (exit={code})"))
                    for cmd, code in last.items()]
+        if not checks:   # no checks, nothing changed, nothing run: "done" would be an unverified claim
+            checks.append(CheckResult(type="nothing_verified", ok=False,
+                                      detail="This step has no acceptance checks and no file was changed or command run. Make the change, then finish."))
     return VerificationResult(ok=all(c.ok for c in checks), checks=checks)
