@@ -1,0 +1,351 @@
+# V2 eval tasks: work on EXISTING projects (evals/fixtures/<fixture>, copied into a fresh git repo per run).
+# Checks are ours (independent of the agent). Types: the standard acceptance checks, plus `python` / `node` scripts that the
+# harness runs from OUTSIDE the workspace with the workspace as working directory (the agent never sees them).
+# `node` checks get helpers: load(path) imports a workspace module, run(argv, env) runs node and returns stdout,
+# assert (node:assert/strict), existsSync/readFileSync/rmSync.
+# Generated once by a script; edit by hand from now on.
+
+- id: fn_delete
+  fixture: flask_notes
+  title: Delete endpoint
+  prompt: Add DELETE /notes/<id> to the notes API. It removes the note and returns 204; an unknown id returns 404 with a JSON error.
+    Keep the existing tests passing.
+  checks:
+  - type: python
+    code: |
+      from app import create_app
+      c = create_app().test_client()
+      i = c.post('/notes', json={'text': 'a'}).get_json()['id']
+      assert c.delete(f'/notes/{i}').status_code == 204
+      assert c.get('/notes').get_json() == []
+      assert c.delete('/notes/999').status_code == 404
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  needs: flask
+- id: fn_search
+  fixture: flask_notes
+  title: Search endpoint
+  prompt: Add GET /notes/search?q=<text> returning the notes whose text contains q, ignoring case, as a JSON list in the same format
+    as GET /notes. A missing or empty q returns 400.
+  checks:
+  - type: python
+    code: |
+      from app import create_app
+      c = create_app().test_client()
+      for t in ('Hello world', 'bye', 'say HELLO'):
+          c.post('/notes', json={'text': t})
+      r = c.get('/notes/search?q=hello').get_json()
+      assert sorted(n['text'] for n in r) == ['Hello world', 'say HELLO'], r
+      assert c.get('/notes/search').status_code == 400
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  needs: flask
+- id: fn_count
+  fixture: flask_notes
+  title: Count endpoint
+  prompt: 'Add GET /notes/count returning {"count": <number of notes>}.'
+  checks:
+  - type: python
+    code: |
+      from app import create_app
+      c = create_app().test_client()
+      assert c.get('/notes/count').get_json() == {'count': 0}
+      c.post('/notes', json={'text': 'x'})
+      assert c.get('/notes/count').get_json() == {'count': 1}
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  needs: flask
+- id: fn_max_length
+  fixture: flask_notes
+  title: Configurable maximum note length
+  prompt: Add a "max_length" setting (default 200, also written to settings.json) and reject notes longer than it with 400. Settings
+    passed to create_app() without max_length must still work.
+  checks:
+  - type: python
+    code: |
+      import json
+      from app import create_app
+      assert json.load(open('settings.json'))['max_length'] == 200
+      c = create_app({'title': 'T', 'max_notes': 10, 'max_length': 5}).test_client()
+      assert c.post('/notes', json={'text': 'abcdef'}).status_code == 400
+      assert c.post('/notes', json={'text': 'abc'}).status_code == 201
+      d = create_app().test_client()
+      assert d.post('/notes', json={'text': 'x' * 201}).status_code == 400
+      assert d.post('/notes', json={'text': 'x' * 200}).status_code == 201
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  needs: flask
+- id: fn_title_header
+  fixture: flask_notes
+  title: App title header
+  prompt: Every response from the API must include an X-App-Title header containing the application title from the settings.
+  checks:
+  - type: python
+    code: |
+      from app import create_app
+      c = create_app().test_client()
+      assert c.get('/health').headers.get('X-App-Title') == 'Team Notes'
+      assert c.get('/notes').headers.get('X-App-Title') == 'Team Notes'
+      z = create_app({'title': 'Zed', 'max_notes': 5}).test_client()
+      assert z.get('/health').headers.get('X-App-Title') == 'Zed'
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  needs: flask
+- id: jt_remove
+  fixture: js_todo
+  title: Remove a todo
+  prompt: Add remove(id) to TodoList (throw an Error for an unknown id) and a `remove <id>` command to the CLI that saves the list and
+    prints "ok".
+  checks:
+  - type: node
+    code: |
+      const { TodoList } = await load('src/todo.js');
+      const l = new TodoList();
+      const a = l.add('a'); l.add('b');
+      l.remove(a.id);
+      assert.deepEqual(l.all().map((t) => t.title), ['b']);
+      assert.throws(() => l.remove(99));
+      rmSync('todos.json', { force: true });
+      run(['src/cli.js', 'add', 'milk']);
+      assert.match(run(['src/cli.js', 'remove', '1']), /ok/);
+      assert.match(run(['src/cli.js', 'list']), /nothing to do/);
+  - type: command_ok
+    command: node --test
+    timeout_s: 120
+  needs: node
+- id: jt_rename_format
+  fixture: js_todo
+  title: Rename formatTodo
+  prompt: Rename the function formatTodo to renderTodo everywhere in the project (source and tests). Behaviour must not change.
+  checks:
+  - type: python
+    code: |
+      import pathlib
+      bad = [str(p) for p in pathlib.Path('.').rglob('*.js') if 'formatTodo' in p.read_text(encoding='utf-8')]
+      assert not bad, bad
+  - type: node
+    code: |
+      const { renderTodo, formatList } = await load('src/format.js');
+      assert.equal(renderTodo({ id: 1, title: 'a', done: false }), '[ ] 1. a');
+      assert.equal(formatList([{ id: 2, title: 'b', done: true }]), '[x] 2. b');
+  - type: command_ok
+    command: node --test
+    timeout_s: 120
+  - type: command_ok
+    command: node src/cli.js list
+  needs: node
+- id: jt_due_dates
+  fixture: js_todo
+  title: Due dates
+  prompt: 'Todos can have an optional due date: add(title, due) where due is a "YYYY-MM-DD" string (any other format throws an Error).
+    A todo with a due date is formatted with " (due YYYY-MM-DD)" at the end, e.g. "[ ] 1. pay rent (due 2026-01-31)".'
+  checks:
+  - type: node
+    code: |
+      const { TodoList } = await load('src/todo.js');
+      const { formatTodo } = await load('src/format.js');
+      const l = new TodoList();
+      assert.equal(formatTodo(l.add('pay rent', '2026-01-31')), '[ ] 1. pay rent (due 2026-01-31)');
+      assert.equal(formatTodo(l.add('x')), '[ ] 2. x');
+      assert.throws(() => l.add('y', '31/01/2026'));
+  - type: command_ok
+    command: node --test
+    timeout_s: 120
+  needs: node
+- id: jt_todo_file
+  fixture: js_todo
+  title: Configurable storage file
+  prompt: The CLI must store todos in the file named by the TODO_FILE environment variable, and use todos.json when it is not set.
+  checks:
+  - type: node
+    code: |
+      rmSync('custom-todos.json', { force: true });
+      run(['src/cli.js', 'add', 'from env'], { TODO_FILE: 'custom-todos.json' });
+      assert.ok(existsSync('custom-todos.json'));
+      assert.match(readFileSync('custom-todos.json', 'utf8'), /from env/);
+      assert.match(run(['src/cli.js', 'list'], { TODO_FILE: 'custom-todos.json' }), /from env/);
+  - type: command_ok
+    command: node --test
+    timeout_s: 120
+  needs: node
+- id: inv_rename
+  fixture: inventory_pkg
+  title: Rename line_total
+  prompt: Rename inventory.pricing.line_total to item_total and update every caller, including the tests. Behaviour must not change.
+  checks:
+  - type: python
+    code: |
+      import pathlib
+      bad = [str(p) for p in pathlib.Path('.').rglob('*.py') if 'line_total' in p.read_text(encoding='utf-8')]
+      assert not bad, bad
+      from inventory.models import Item
+      from inventory.pricing import item_total
+      assert item_total(Item('a', 'A', 2.0, 3)) == 6.0
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  - type: output_contains
+    command: python main.py report
+    text: 'TOTAL: 217.00'
+- id: inv_bulk_discount
+  fixture: inventory_pkg
+  title: Bulk discount from configuration
+  prompt: Add a bulk discount. Two new settings, bulk_min_qty (default 10) and bulk_discount_percent (default 5), go into the config
+    defaults and inventory.json. pricing.line_total(item, cfg=None) applies the discount when cfg is given and item.qty >= cfg["bulk_min_qty"].
+    `python main.py report` must use the configured discount.
+  checks:
+  - type: python
+    code: |
+      from inventory.config import load_config
+      from inventory.models import Item
+      from inventory.pricing import line_total
+      cfg = {'bulk_min_qty': 10, 'bulk_discount_percent': 5}
+      assert line_total(Item('a', 'A', 2.0, 10), cfg) == 19.0
+      assert line_total(Item('a', 'A', 2.0, 9), cfg) == 18.0
+      assert line_total(Item('a', 'A', 2.0, 10)) == 20.0
+      c = load_config()
+      assert c['bulk_min_qty'] == 10 and c['bulk_discount_percent'] == 5
+      d = load_config('does-not-exist.json')
+      assert d['bulk_min_qty'] == 10 and d['bulk_discount_percent'] == 5
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  - type: output_contains
+    command: python main.py report
+    text: 'TOTAL: 207.65'
+- id: inv_export_csv
+  fixture: inventory_pkg
+  title: Export low stock as CSV
+  prompt: Add `python main.py export-low-stock <path>`, which writes the low-stock items (using the configured threshold) to a CSV file
+    with the columns sku, name, qty.
+  checks:
+  - type: command_ok
+    command: python main.py export-low-stock out.csv
+  - type: python
+    code: |
+      import csv
+      rows = list(csv.DictReader(open('out.csv', newline='', encoding='utf-8')))
+      assert [r['sku'] for r in rows] == ['B2', 'D4'], rows
+      assert {'sku', 'name', 'qty'} <= set(rows[0])
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+- id: inv_currency
+  fixture: inventory_pkg
+  title: Currency in the report
+  prompt: '`python main.py report` must show the configured currency code after every amount, e.g. "A1 Widget: 100.00 EUR" and "TOTAL:
+    217.00 EUR". Calling the report function without a currency keeps the current output, so existing tests still pass.'
+  checks:
+  - type: output_contains
+    command: python main.py report
+    text: 'A1 Widget: 100.00 EUR'
+  - type: output_contains
+    command: python main.py report
+    text: 'TOTAL: 217.00 EUR'
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+- id: inv_validation
+  fixture: inventory_pkg
+  title: Validate CSV rows
+  prompt: load_items must raise ValueError when a row has a negative price or quantity. The message must contain the CSV line number
+    (the header is line 1).
+  checks:
+  - type: python
+    code: |
+      from inventory.storage import load_items
+      open('bad.csv', 'w', encoding='utf-8').write('sku,name,price,qty\nA,a,1.0,1\nB,b,-2.0,1\n')
+      try:
+          load_items('bad.csv')
+      except ValueError as e:
+          assert '3' in str(e), str(e)
+      else:
+          raise AssertionError('no ValueError')
+      open('bad2.csv', 'w', encoding='utf-8').write('sku,name,price,qty\nA,a,1.0,-1\n')
+      try:
+          load_items('bad2.csv')
+      except ValueError as e:
+          assert '2' in str(e), str(e)
+      else:
+          raise AssertionError('no ValueError for negative qty')
+      assert len(load_items()) == 4
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+- id: bs_fix_bug
+  fixture: buggy_shop
+  title: Fix the seeded bug
+  prompt: A test in tests/test_cart.py fails. Find and fix the bug in the shop package without changing the tests.
+  checks:
+  - type: command_ok
+    command: python -m pytest -q
+    timeout_s: 120
+  - type: python
+    code: |
+      from shop.discounts import apply_discount
+      assert apply_discount(200, 25) == 150
+      import pathlib
+      assert 'assert c.total() == 17.1' in pathlib.Path('tests/test_cart.py').read_text(encoding='utf-8')
+- id: bs_grand_total
+  fixture: buggy_shop
+  title: Shipping and grand total
+  prompt: Add Cart.shipping(), which is 4.99 when total() is below 50 and 0 otherwise, and Cart.grand_total() = total() + shipping(),
+    rounded to 2 decimals. Do not change total().
+  checks:
+  - type: python
+    code: |
+      from shop.cart import Cart
+      c = Cart(); c.add('cheese')
+      assert c.shipping() == 4.99 and c.grand_total() == 10.99
+      d = Cart(); d.add('coffee', 6)
+      assert d.shipping() == 0 and d.grand_total() == 57.0
+      assert d.total() == 57.0
+- id: bs_coupons
+  fixture: buggy_shop
+  title: Coupon codes
+  prompt: 'Add coupon codes. Create shop/coupons.py with COUPONS = {"SAVE10": 10, "HALF": 50}. Cart.apply_coupon(code) sets the cart''s
+    discount percent from the coupon; codes are case-insensitive and an unknown code raises ValueError.'
+  checks:
+  - type: python
+    code: |
+      from shop.cart import Cart
+      from shop.coupons import COUPONS
+      assert COUPONS == {'SAVE10': 10, 'HALF': 50}
+      c = Cart()
+      c.apply_coupon('half')
+      assert c.discount_percent == 50
+      c.apply_coupon('SAVE10')
+      assert c.discount_percent == 10
+      try:
+          c.apply_coupon('NOPE')
+      except ValueError:
+          pass
+      else:
+          raise AssertionError('unknown coupon accepted')
+- id: bs_remove
+  fixture: buggy_shop
+  title: Remove items from the cart
+  prompt: Add Cart.remove(product, qty=None). Without qty the whole line is removed; with qty the quantity goes down and the line disappears
+    at 0. Removing a product that is not in the cart raises KeyError.
+  checks:
+  - type: python
+    code: |
+      from shop.cart import Cart
+      c = Cart(); c.add('apple', 4); c.add('bread')
+      c.remove('apple', 1)
+      assert c.lines == {'apple': 3, 'bread': 1}
+      c.remove('apple', 3)
+      assert c.lines == {'bread': 1}
+      c.remove('bread')
+      assert c.lines == {}
+      try:
+          c.remove('cheese')
+      except KeyError:
+          pass
+      else:
+          raise AssertionError('removing a missing product must raise KeyError')

@@ -1,0 +1,162 @@
+# Hand-labelled: files (and key symbols) that retrieval SHOULD return for each V2 task. Used for recall@k and MRR.
+# The first file listed is the most important one.
+
+fn_delete:
+  query: Add DELETE /notes/<id> to the notes API. It removes the note and returns 204; an unknown id returns 404 with a JSON error.
+    Keep the existing tests passing.
+  files:
+  - app.py
+  - notes/store.py
+  symbols:
+  - create_app
+  - NoteStore
+fn_search:
+  query: Add GET /notes/search?q=<text> returning the notes whose text contains q, ignoring case, as a JSON list in the same format
+    as GET /notes. A missing or empty q returns 400.
+  files:
+  - app.py
+  - notes/store.py
+  symbols:
+  - create_app
+  - NoteStore
+fn_count:
+  query: 'Add GET /notes/count returning {"count": <number of notes>}.'
+  files:
+  - app.py
+  - notes/store.py
+  symbols:
+  - create_app
+fn_max_length:
+  query: Add a "max_length" setting (default 200, also written to settings.json) and reject notes longer than it with 400. Settings
+    passed to create_app() without max_length must still work.
+  files:
+  - app.py
+  - settings.py
+  - settings.json
+  symbols:
+  - create_app
+  - load_settings
+fn_title_header:
+  query: Every response from the API must include an X-App-Title header containing the application title from the settings.
+  files:
+  - app.py
+  - settings.py
+  - settings.json
+  symbols:
+  - create_app
+  - load_settings
+jt_remove:
+  query: Add remove(id) to TodoList (throw an Error for an unknown id) and a `remove <id>` command to the CLI that saves the list and
+    prints "ok".
+  files:
+  - src/todo.js
+  - src/cli.js
+  symbols:
+  - TodoList
+jt_rename_format:
+  query: Rename the function formatTodo to renderTodo everywhere in the project (source and tests). Behaviour must not change.
+  files:
+  - src/format.js
+  - src/cli.js
+  - test/format.test.js
+  symbols:
+  - formatTodo
+  - formatList
+jt_due_dates:
+  query: 'Todos can have an optional due date: add(title, due) where due is a "YYYY-MM-DD" string (any other format throws an Error).
+    A todo with a due date is formatted with " (due YYYY-MM-DD)" at the end, e.g. "[ ] 1. pay rent (due 2026-01-31)".'
+  files:
+  - src/todo.js
+  - src/format.js
+  symbols:
+  - TodoList
+  - formatTodo
+jt_todo_file:
+  query: The CLI must store todos in the file named by the TODO_FILE environment variable, and use todos.json when it is not set.
+  files:
+  - src/storage.js
+  - src/cli.js
+  symbols:
+  - load
+  - save
+  - DEFAULT_FILE
+inv_rename:
+  query: Rename inventory.pricing.line_total to item_total and update every caller, including the tests. Behaviour must not change.
+  files:
+  - inventory/pricing.py
+  - inventory/reports.py
+  - tests/test_pricing.py
+  symbols:
+  - line_total
+inv_bulk_discount:
+  query: Add a bulk discount. Two new settings, bulk_min_qty (default 10) and bulk_discount_percent (default 5), go into the config
+    defaults and inventory.json. pricing.line_total(item, cfg=None) applies the discount when cfg is given and item.qty >= cfg["bulk_min_qty"].
+    `python main.py report` must use the configured discount.
+  files:
+  - inventory/pricing.py
+  - inventory/config.py
+  - inventory.json
+  - inventory/reports.py
+  - main.py
+  symbols:
+  - line_total
+  - load_config
+  - value_report
+inv_export_csv:
+  query: Add `python main.py export-low-stock <path>`, which writes the low-stock items (using the configured threshold) to a CSV file
+    with the columns sku, name, qty.
+  files:
+  - inventory/reports.py
+  - main.py
+  - inventory/config.py
+  symbols:
+  - low_stock
+  - main
+inv_currency:
+  query: '`python main.py report` must show the configured currency code after every amount, e.g. "A1 Widget: 100.00 EUR" and "TOTAL:
+    217.00 EUR". Calling the report function without a currency keeps the current output, so existing tests still pass.'
+  files:
+  - inventory/reports.py
+  - main.py
+  - inventory/config.py
+  - inventory.json
+  symbols:
+  - value_report
+  - load_config
+inv_validation:
+  query: load_items must raise ValueError when a row has a negative price or quantity. The message must contain the CSV line number
+    (the header is line 1).
+  files:
+  - inventory/storage.py
+  symbols:
+  - load_items
+bs_fix_bug:
+  query: A test in tests/test_cart.py fails. Find and fix the bug in the shop package without changing the tests.
+  files:
+  - shop/discounts.py
+  - shop/cart.py
+  symbols:
+  - apply_discount
+  - Cart
+bs_grand_total:
+  query: Add Cart.shipping(), which is 4.99 when total() is below 50 and 0 otherwise, and Cart.grand_total() = total() + shipping(),
+    rounded to 2 decimals. Do not change total().
+  files:
+  - shop/cart.py
+  symbols:
+  - Cart
+bs_coupons:
+  query: 'Add coupon codes. Create shop/coupons.py with COUPONS = {"SAVE10": 10, "HALF": 50}. Cart.apply_coupon(code) sets the cart''s
+    discount percent from the coupon; codes are case-insensitive and an unknown code raises ValueError.'
+  files:
+  - shop/cart.py
+  - shop/discounts.py
+  symbols:
+  - Cart
+bs_remove:
+  query: Add Cart.remove(product, qty=None). Without qty the whole line is removed; with qty the quantity goes down and the line disappears
+    at 0. Removing a product that is not in the cart raises KeyError.
+  files:
+  - shop/cart.py
+  symbols:
+  - Cart
