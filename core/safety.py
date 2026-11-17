@@ -1,6 +1,7 @@
 """Path confinement, protected paths, command allowlist, output truncation. Pure functions, no I/O side effects."""
 import fnmatch
 import os
+import re
 import shlex
 import shutil
 from dataclasses import dataclass
@@ -31,7 +32,8 @@ def resolve_in_root(root: Path | str, rel: str) -> Path:
     """Resolve `rel` under `root`; reject absolute paths, '..', drive changes and symlink escapes."""
     if not isinstance(rel, str) or "\x00" in rel:
         raise SafetyError("BAD_PATH", "Invalid path.")
-    if os.path.isabs(rel) or os.path.splitdrive(rel)[0] or rel[:1] in ("/", "\\"):
+    # A drive prefix ("C:x") is rejected on every OS: a workspace must behave the same on Windows and Linux.
+    if os.path.isabs(rel) or os.path.splitdrive(rel)[0] or re.match(r"[A-Za-z]:", rel) or rel[:1] in ("/", "\\"):
         raise SafetyError("OUTSIDE_ROOT", f"Absolute paths are forbidden: {rel}")
     if ".." in rel.replace("\\", "/").split("/"):
         raise SafetyError("OUTSIDE_ROOT", f"Path traversal is forbidden: {rel}")
