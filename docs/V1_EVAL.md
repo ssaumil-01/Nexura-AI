@@ -101,3 +101,13 @@ python evals/run.py --only calc_cli   # one task
 python evals/run.py --fake            # scripted model, 1 smoke task, no cost (this is what CI runs)
 python evals/report.py evals/results/a.json evals/results/b.json   # tables for several runs
 ```
+
+## Pipeline check without an LLM (oracle)
+
+`python evals/run.py --oracle` replaces the model with a scripted perfect agent (`evals/oracle.py`, one verified solution per task).
+Everything else is the real pipeline: planner parsing, validator, execution manager, verification, git checkpoints, approvals and state.
+Our independent checks then grade the result. It needs no network and costs nothing (about 45 s for all 14 tasks, using the packages
+already in `.evalvenv`). It tests V1's machinery, **not** model quality: if a task fails here the bug is in the pipeline or the eval, never in a model.
+
+Result on commit `795fc06`: **14/14 pass**. `tests/test_oracle_eval.py` runs the offline-safe tasks on every CI run and also proves that a deliberately
+wrong solution is reported as a failure (`ORACLE_SABOTAGE=<task id>`), so a green result is meaningful.

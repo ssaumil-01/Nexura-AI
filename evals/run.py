@@ -2,6 +2,7 @@
 checks WE wrote (not the agent's own acceptance checks).
 
     python evals/run.py --fake                      # CI smoke: scripted model, only `smoke: true` tasks, no network
+    python evals/run.py --oracle                    # scripted PERFECT agent on all tasks: tests the pipeline, no LLM, no cost
     python evals/run.py --only calc_cli,todo_cli    # real model (needs GOOGLE_API_KEY + CODER/PLANNER_MODEL_NAME)
     python evals/run.py                             # all real-model tasks
 
@@ -131,6 +132,8 @@ def main() -> int:
     ap.add_argument("--tasks", default=str(ROOT / "evals" / "tasks.yaml"))
     ap.add_argument("--only", help="comma-separated task ids")
     ap.add_argument("--fake", action="store_true", help="scripted model, smoke tasks only (no network, no cost)")
+    ap.add_argument("--oracle", action="store_true", help="scripted correct solutions for every task (no LLM): checks the pipeline itself")
+    ap.add_argument("--no-venv", action="store_true", help="oracle only: run agent commands in the current environment")
     ap.add_argument("--approval", default="auto_within_limits", choices=["ask_every_edit", "ask_risky", "auto_within_limits"])
     ap.add_argument("--timeout", type=int, default=900, help="soft time limit per task, seconds")
     ap.add_argument("--venv", default=str(ROOT / ".evalvenv"), help="throwaway venv for agent commands")
@@ -143,6 +146,8 @@ def main() -> int:
         tasks = [t for t in tasks if t["id"] in wanted]
     elif args.fake:
         tasks = [t for t in tasks if t.get("smoke")]
+    elif args.oracle:
+        tasks = [t for t in tasks if not t.get("smoke")]
     else:
         tasks = [t for t in tasks if not t.get("smoke")]
     if not tasks:
@@ -152,6 +157,11 @@ def main() -> int:
     if args.fake:
         from core import fake_llm
         fake_llm.install()
+    elif args.oracle:
+        import oracle
+        oracle.install()
+        if not args.no_venv:
+            setup_venv(Path(args.venv))
     else:
         config.configure_observability()
         for var in ("CODER_MODEL_NAME", "PLANNER_MODEL_NAME", "GOOGLE_API_KEY"):
@@ -176,13 +186,13 @@ def main() -> int:
                "approvals": sum(r.get("approvals") or 0 for r in results), "time_s": round(sum(r["time_s"] for r in results), 1),
                "tokens": sum(r.get("tokens") or 0 for r in results) or None}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    doc = {"date": datetime.now().isoformat(timespec="seconds"), "commit": commit, "fake_llm": args.fake,
-           "coder_model": "fake" if args.fake else os.getenv("CODER_MODEL_NAME"),
-           "planner_model": "fake" if args.fake else os.getenv("PLANNER_MODEL_NAME"),
+    doc = {"date": datetime.now().isoformat(timespec="seconds"), "commit": commit, "fake_llm": args.fake or args.oracle, "oracle": args.oracle,
+           "coder_model": "oracle" if args.oracle else "fake" if args.fake else os.getenv("CODER_MODEL_NAME"),
+           "planner_model": "oracle" if args.oracle else "fake" if args.fake else os.getenv("PLANNER_MODEL_NAME"),
            "approval_level": args.approval, "prompt_versions": config.PROMPT_VERSIONS, "summary": summary, "results": results}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{datetime.now():%Y-%m-%d_%H%M%S}{'_fake' if args.fake else ''}.json"
+    path = out / f"{datetime.now():%Y-%m-%d_%H%M%S}{'_oracle' if args.oracle else '_fake' if args.fake else ''}.json"
     path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(f"\n{passed}/{len(results)} passed. Results: {path}")
     return 0 if passed == len(results) else 1
