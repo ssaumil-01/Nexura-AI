@@ -14,6 +14,40 @@ def _int(name: str, default: int) -> int:
     return int(os.getenv(name, default))
 
 
+def env_choice(name: str, default: str, allowed: tuple, env=None) -> str:
+    """Read a setting that must be one of `allowed` (case-insensitive); anything else is a readable ConfigError."""
+    value = (os.environ if env is None else env).get(name, default).strip().lower()
+    if value not in allowed:
+        raise ConfigError(f"{name}={value!r} is not valid. Use one of: {', '.join(allowed)}.")
+    return value
+
+
+def env_int(name: str, default: int, env=None) -> int:
+    """Read a positive integer setting."""
+    raw = (os.environ if env is None else env).get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ConfigError(f"{name}={raw!r} is not valid. Use a whole number of 1 or more.")
+    return value
+
+
+def env_bool(name: str, default: bool, env=None) -> bool:
+    raw = (os.environ if env is None else env).get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(f"{name}={raw!r} is not valid. Use true or false.")
+
+
 # --- Limits ------------------------------------------------
 MAX_RETRIES = 3
 MAX_TOOL_CALLS_PER_TASK = 15
@@ -85,3 +119,17 @@ from pathlib import Path  # noqa: E402
 DATA_DIR = Path(os.getenv("NEXURA_DATA_DIR") or Path(__file__).resolve().parent / "memory")
 DB_PATH = DATA_DIR / "nexura.db"              # state_manager (projects, runs, tasks, file_changes, events)
 CHECKPOINT_DB_PATH = DATA_DIR / "checkpoints.db"  # LangGraph checkpoints
+
+# --- V2: code intelligence (every feature is off by default, so V1 behavior is unchanged) ---
+RETRIEVAL_MODE = env_choice("NEXURA_RETRIEVAL_MODE", "v1", ("v1", "v2"))   # v1 = V1 context builder, v2 = retrieval
+INDEXING_ENABLED = env_bool("NEXURA_INDEXING_ENABLED", False)
+PATCH_MODE = env_choice("NEXURA_PATCH_MODE", "v1", ("v1", "v2"))
+EMBEDDING_MODEL = os.getenv("NEXURA_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")   # local only; downloaded after consent
+CHUNK_MAX_TOKENS = env_int("NEXURA_CHUNK_MAX_TOKENS", 400)
+CHUNK_MAX_LINES = env_int("NEXURA_CHUNK_MAX_LINES", 80)
+INDEX_MAX_FILE_BYTES = env_int("NEXURA_INDEX_MAX_FILE_BYTES", 500_000)
+INDEX_MAX_FILES = env_int("NEXURA_INDEX_MAX_FILES", 5000)
+TOP_K = env_int("NEXURA_TOP_K", 8)
+RRF_K = env_int("NEXURA_RRF_K", 60)
+RETRIEVAL_CONTEXT_BUDGET = env_int("NEXURA_RETRIEVAL_CONTEXT_BUDGET", 40_000)   # characters
+INDEX_DIR = DATA_DIR / "index"                # index/<workspace_id>/{chroma/, lexical.db, manifest.json}; never inside the workspace

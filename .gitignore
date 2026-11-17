@@ -29,3 +29,4 @@ extension/.vscode-test/
 .vscode-test/
 ui/dist/
 .evalvenv/
+memory/index/
