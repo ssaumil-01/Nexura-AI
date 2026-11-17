@@ -1,0 +1,38 @@
+# Decisions
+
+- 2026-11-16: V1 work branch `v1/hardening` created from `main` @ 6483046. Baseline: coder loop works but cap never triggers, always prints "Pipeline complete", server binds 0.0.0.0 with CORS *, tool paths via module globals.
+- 2026-11-16: Owner said do NOT commit pre-existing `docs/*.md`; only files created by the agent (e.g. this one) are staged, by explicit path.
+- 2026-11-16: Dev venv is `.venv/` inside the repo (git-ignored).
+- 2026-11-16: Bug-reproduction tests use `xfail(strict=True)` until fixed.
+- 2026-11-16: Tools receive `ProjectContext` via injected `config["configurable"]["project"]` (RunnableConfig param, hidden from the LLM schema); no module globals. execution_manager (Phase 3) will call tools with the same config.
+- 2026-11-16: Tool errors are strings `ERROR: <CODE>: <message>`; batch_file_operations returns a JSON list of per-op results.
+- 2026-11-16: run_command allows one allowlisted program (shell=False, bare executable names, no shell operators); `python -c` can still execute arbitrary Python (accepted until the V2 sandbox).
+- 2026-11-16: `.env*` and `.git/` are never writable; other protected paths need `ctx.allow_protected` (approval flow comes in Phase 5).
+- 2026-11-16: task_status/task_errors are keyed by str(step_id) (not int) so they survive JSON checkpoint round-trips.
+- 2026-11-16: Acceptance is one flat pydantic model with a `type` enum and per-type required fields (Gemini-friendly response schema) instead of a discriminated union.
+- 2026-11-16: Failure policy default is `stop` (config.FAILURE_POLICY / NEXURA_FAILURE_POLICY); run status: all done=completed, some done=completed_with_failures, none done=failed.
+- 2026-11-16: Interactive tool approval is an explicit `approval` node using interrupt(); only yes/y/approve approves, other text rejects and is sent to the agent.
+- 2026-11-16: Graph nodes name their LangGraph config parameter `config`; the config module is imported as `app_config` inside core/graph.py.
+- 2026-11-16: Phase 3 control plane: agents (coder/debugger) only return tool calls; core/validator -> core/execution_manager (the only module importing tools; enforced by an AST test) -> core/verification. Verification default (no acceptance): syntax of changed files + LAST run of each distinct command must exit 0 (not "all runs").
+- 2026-11-16: Debugger is a separate prompt/agent (same model as the coder), restricted to read/patch/write-existing/run_command; rejections are fed into its next prompt.
+- 2026-11-16: Plan files (plan.json, plan.md) and run logs live in `<data dir>/runs/<run_id>/`, NOT in the user's workspace. plan.md is re-rendered after each task.
+- 2026-11-16: SQLite state DB `memory/nexura.db` (tables projects/runs/tasks/file_changes/events + schema_version); LangGraph checkpoints in separate `memory/checkpoints.db`; both under config.DATA_DIR (env NEXURA_DATA_DIR).
+- 2026-11-16: Resume = rebuild state from the DB (done tasks kept, all others reset to pending with attempts 0) and enter the graph at task_picker (route_start on `resuming`); new LangGraph thread per resume.
+- 2026-11-17: Git is required (core/checkpoints.py shells out to `git`; no GitPython). Workspace root must itself be a repo top level (a subfolder of a parent repo counts as NOT_A_REPO). Checkpoints = commit objects from a temporary index under refs/nexura/<run>/<task> taken BEFORE each task; undo restores through `git cat-file --filters` (byte-exact on Windows autocrlf).
+- 2026-11-17: dirty_policy `checkpoint` snapshots uncommitted state as refs/nexura/<run>/base and proceeds; `abort` refuses. Only editor-unsaved files (sent by the extension) are untouchable; git-dirty files may be edited because the base checkpoint protects them.
+- 2026-11-17: Added delete_file and rename_file tools (the plan requires deletes/renames to need approval, V1 had no such tools). Both are always "risky".
+- 2026-11-17: Approval levels: ask_every_edit = ask for any edit; ask_risky (default) = ask for delete/rename/manifest/config/limits/protected/installs; auto_within_limits = ask only for "hard" items (protected paths, installs, size limits, external modification). Protected paths are never auto-approved at any level; `.env*`/`.git/` are never writable.
+- 2026-11-17: Approval interrupt payload {type: approval|tool_approval, task_id, reason, files, diffs[{file,change_type,before,after,diff,lines}], calls}; resume with {"decision": "approve"|"reject", "note"} (plain strings yes/y/approve also accepted by the CLI). Three user rejections in one task fail the task.
+- 2026-11-17: One active run per workspace via a `locks` table (schema v2); a lock whose pid is dead is stale and taken over. External-modification detection uses sha256 recorded when Nexura reads/writes a file (+ editor-reported edits); a mismatch pauses for approval.
+- 2026-11-17: pip installs are NOT redirected into a project venv (V1 shortcut); the approval reason states which Python environment will be modified.
+- 2026-11-17: API: every endpoint (incl. /health) needs the bearer token; Host must be loopback; no CORS; run state is read BEFORE the DB row so a finished handle always shows its final status. Runs execute in worker threads (core/run_manager.py); SSE ids are positions in an in-memory per-run list, with DB replay for runs not active in this process.
+- 2026-11-17: Approvals over the API are per task (whole pending batch), not per file; files can be opened as native diffs individually.
+- 2026-11-17: The extension bundles the Python backend (copied to extension/backend at build) and creates a private venv in global storage on first use unless nexura.pythonPath or the Python extension's interpreter (3.11+) is available. The webview never holds the token (host-only API client).
+- 2026-11-17: App/ (old Tauri prototype) contained only mock UI; nothing was salvaged. Removal/archive (V1-6.20) is left for the owner's decision.
+- 2026-11-17: NEXURA_FAKE_LLM=1 installs scripted models (core/fake_llm.py); test-only, used by the extension smoke test, the fake eval smoke and one API test.
+- 2026-11-17: Evals run agent commands inside a throwaway venv (.evalvenv) put first on PATH so real runs never modify the global Python; approvals during evals are auto-approved and counted.
+- 2026-11-17: ruff ignores whitespace-only rules (W291/W292/W293) and tools/github_tool.py (must stay untouched) rather than reformatting unrelated files.
+- 2026-11-17: Eval-driven fixes: command operators are rejected only outside quotes; python3/pip3 allowed; http_status url inferred from the start command; acceptance commands that can never run are validated at plan time and, after 3 bad planner answers, dropped with a visible plan warning (steps left without checks use default verification); planner prompt v5, coder v2.
+- 2026-11-17: Every model client has an explicit timeout (NEXURA_LLM_TIMEOUT_S, default 120 s; the Google client default was none + 6 internal retries). Transient errors (429/5xx/high demand/timeouts) retry with backoff; daily quota exhaustion fails fast as LLM_QUOTA.
+- 2026-11-17: The eval baseline is run 2 (10/14). Later fixes could not be re-measured live because the free-tier daily quota (500 requests/model/day) was exhausted; re-run before using as the V2 reference (docs/V1_EVAL.md).
+- 2026-11-17: V1-6.20 decided by owner: App/ moved to archive/App/ (kept, not deleted). Unused by the extension, backend, tests and CI.

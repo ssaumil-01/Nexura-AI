@@ -1,16 +1,27 @@
 import os
 import re
-import json
-from typing import Optional, List, Literal, Union, Any
-from pydantic import BaseModel, Field
+import time
 from dotenv import load_dotenv
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
+from pydantic import ValidationError
 from google import genai
 from google.genai import types
 
+import config
+from agents.llm import TRANSIENT, backoff_delay, quota_message
+from core.schemas import Acceptance, ExecutionPlan, Step  # noqa: F401  (re-exported for callers)
+from core.task_manager import validate_plan
+
 load_dotenv()
+
+PLAN_ATTEMPTS = 3  # first try + 2 retries with the error fed back
+
+
+class PlanError(RuntimeError):
+    """The planner could not produce a valid plan."""
+
 
 PROMPT_TEMPLATE = """You are a senior software architect designing execution plans for an autonomous AI system.
 
@@ -44,11 +55,27 @@ Each step must represent EXACTLY ONE action.
    ❌ BAD: "Step 1: Create index.html" → "Step 2: Write HTML structure" → "Step 3: Create style.css"
    ✅ GOOD: "Step 1: Build the complete calculator UI (HTML + CSS + JS)"
 
-2. KEEP PLANS CONCISE (3-5 STEPS)
-   Each step groups related work together. The Coder Agent handles the details.
+2. KEEP PLANS SMALL BUT VERIFIABLE (3-8 STEPS)
+   Each step is one logical unit that can be checked on its own. The Coder Agent handles the details.
 
-3. EACH STEP HAS: step_id, title, description, dependencies
+3. EACH STEP HAS: step_id, title, description, dependencies, acceptance
    The Coder Agent decides which tools to use — you just describe WHAT to do.
+
+3b. ACCEPTANCE CHECKS (REQUIRED, objective, machine-checkable)
+   Every step needs at least one check from this list (paths are relative to the project folder):
+   - {{"type": "file_exists", "path": "app.py"}}
+   - {{"type": "syntax_ok", "paths": ["app.py", "utils.py"]}}
+   - {{"type": "command_ok", "command": "python -m pytest -q", "timeout_s": 60}}
+   - {{"type": "output_contains", "command": "python main.py 2+2", "text": "4"}}
+   - {{"type": "http_status", "start_command": "python app.py", "url": "http://127.0.0.1:5000/health", "expect": 200, "wait_s": 10}}
+   For http_status the "url" field is REQUIRED (the full http://127.0.0.1:PORT/path to request; use the port from start_command).
+   Commands are ONE program from EXACTLY this list: python, python3, py, pip, node, npm, npx, uvicorn, pytest, streamlit, flask.
+   NOT available (never use them in checks): curl, wget, cat, grep, ls, dir, echo, type, rm, sh, bash, powershell.
+   - To check a web endpoint use an http_status check (never curl). To check file contents use
+     {{"type": "output_contains", "command": "python -c \"print(open('index.html').read())\"", "text": "<h1"}}.
+   - No shell operators (| & ; > <) outside quotes. Run tests with `python -m pytest -q` (not bare `pytest`).
+   Acceptance checks must NEVER install packages (no `pip install`/`npm install`): installing is part of the step's work, not a check.
+   Only a step that purely writes documentation may use "acceptance": [] together with "documentation_only": true.
 
 4. DO NOT SPECIFY TOOLS OR FILE PATHS IN THE PLAN
    The agent autonomously picks tools based on the task description.
@@ -70,7 +97,7 @@ Each step must represent EXACTLY ONE action.
    - must increment sequentially
 
 9. DEPENDENCIES:
-   - use step_id references
+   - use step_id references to EARLIER steps only
    - empty list if none
 
 ========================
@@ -89,89 +116,81 @@ Each step must represent EXACTLY ONE action.
 {user_prompt}
 """
 
-class Step(BaseModel):
-    step_id: int = Field(description="Step ID starting from 1, incrementing sequentially")
-    title: str = Field(description="Short title for the step")
-    description: str = Field(description="Detailed description of what to accomplish in this step")
-    dependencies: List[int] = Field(description="List of step_ids this step depends on", default_factory=list)
+FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
-class ExecutionPlan(BaseModel):
-    project_id: str = Field(description="A unique ID for the project")
-    goal: str = Field(description="The main goal of the execution plan")
-    steps: List[Step] = Field(description="List of execution steps")
+
+def strip_fences(text: str) -> str:
+    m = FENCE.match(text.strip())
+    return (m.group(1) if m else text).strip()
 
 
 class PlannerAgent:
     def __init__(self):
-        # We configure the parser using the defined Pydantic model
+        # The parser is only used to render format instructions for the prompt
         self.parser = PydanticOutputParser(pydantic_object=ExecutionPlan)
-        
-        # We configure the PromptTemplate
         self.prompt = PromptTemplate(
             template=PROMPT_TEMPLATE,
             input_variables=["user_prompt"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
-        
-        # Load environment variables
+
         self.api_key = os.getenv("GOOGLE_API_KEY")
-        self.model_name = os.getenv("PLANNER_MODEL_NAME")
+        self.model_name = config.model_name("planner")
+        self.prompt_version = config.PROMPT_VERSIONS["planner"]
 
         if not self.api_key:
             print("Warning: Missing GOOGLE_API_KEY in .env")
-            
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+
+        self.client = (genai.Client(api_key=self.api_key, http_options=types.HttpOptions(timeout=config.LLM_TIMEOUT_S * 1000))
+                       if self.api_key else None)
 
     def call_llm(self, prompt: str) -> str:
-        """Call the Gemini LLM via google-genai directly."""
-        try:
-            if not self.client:
-                raise ValueError("GenAI Client is not initialized.")
-                
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                )
-            )
-            return response.text.strip()
-        except Exception as e:
-            print(f"Gemini API Error: {e}")
-            raise e
-
-    def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None) -> Optional[ExecutionPlan]:
-        """
-        Complete execution flow:
-        1. user input -> provided as user_prompt
-        2. Build LLM Prompt (with optional feedback from previous iteration)
-        3. Call LLM (via google-genai directly)
-        4. Validate Output and Parse (Langchain Parser)
-        5. Save JSON & Markdown
-        """
+        """Call Gemini with a JSON response schema so the output is structured."""
         if not self.client:
-            print("Error: GenAI Client not configured properly. Missing API key.")
-            return None
+            raise ValueError("GenAI Client is not initialized.")
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=config.TEMPERATURE,
+                response_mime_type="application/json",
+                response_schema=ExecutionPlan,
+            )
+        )
+        return response.text.strip()
 
+    def _call_with_retry(self, prompt: str) -> str:
+        """Transient API errors (rate limit, 5xx 'high demand', timeouts) are retried with backoff; others fail at once."""
+        for attempt in range(config.MAX_RETRIES):
+            try:
+                return self.call_llm(prompt)
+            except Exception as e:
+                text = str(e)
+                quota = quota_message(text)
+                if quota:
+                    raise RuntimeError(quota) from e
+                if attempt + 1 >= config.MAX_RETRIES or not TRANSIENT.search(text):
+                    raise
+                wait = backoff_delay(attempt, text)
+                print(f"[Planner] transient API error ({text[:80]}...), retrying in {wait:.0f}s")
+                time.sleep(wait)
+        raise AssertionError("unreachable")
+
+    def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None) -> ExecutionPlan:
+        """Generate a validated plan. Retries up to PLAN_ATTEMPTS-1 times, feeding the error back. Raises PlanError."""
+        if not self.client:
+            raise PlanError("GenAI client not configured (missing GOOGLE_API_KEY).")
+
+        print(f"[Planner] role=planner prompt_version={self.prompt_version} model={self.model_name}")
+        prompt = self.prompt.format(user_prompt=user_prompt)
         if feedback and previous_plan:
-            print("Re-planning based on user feedback...")
-        else:
-            print("Calling LLM to generate execution plan...")
-        
-        try:
-            # Generate prompt with user request and formatting instructions
-            formatted_prompt = self.prompt.format(user_prompt=user_prompt)
-            
-            # If there is feedback from the user, append it to the prompt
-            if feedback and previous_plan:
-                import json
-                prev_plan_str = json.dumps(previous_plan, indent=2)
-                formatted_prompt += f"""
+            import json
+            prompt += f"""
 
 ========================
 PREVIOUS PLAN (REJECTED BY USER)
 ========================
-{prev_plan_str}
+{json.dumps(previous_plan, indent=2)}
 
 ========================
 USER FEEDBACK
@@ -180,24 +199,79 @@ USER FEEDBACK
 
 Please generate an IMPROVED plan that addresses the user's feedback above.
 """
-            
-            # Call LLM directly using google-genai
-            output_content = self.call_llm(formatted_prompt)
-            
-            # Parse output into Pydantic Model (this validates schemas)
-            plan_obj = self.parser.parse(output_content)
-            
-            print("Successfully validated generated plan schema.")
-            
-            # Save the plan (both JSON and Markdown for viewing)
+
+        last_error, last_raw = "", ""
+        self.last_warnings: list[str] = []
+        for attempt in range(PLAN_ATTEMPTS):
+            attempt_prompt = prompt if not last_error else prompt + f"""
+
+========================
+YOUR PREVIOUS ANSWER WAS INVALID
+========================
+{last_error}
+
+Reminder of the required fields per acceptance type: file_exists(path), syntax_ok(paths), command_ok(command),
+output_contains(command, text), http_status(url, and usually start_command). Return corrected JSON only.
+"""
+            try:
+                raw = last_raw = self._call_with_retry(attempt_prompt)
+                plan_obj = ExecutionPlan.model_validate_json(strip_fences(raw))
+                problems = validate_plan(plan_obj)
+                if problems:
+                    raise ValueError("; ".join(problems))
+            except (ValidationError, ValueError) as e:
+                last_error = str(e)[:1500]
+                print(f"[Planner] attempt {attempt + 1}/{PLAN_ATTEMPTS} invalid: {last_error[:200]}")
+                continue
+            except Exception as e:  # API/network failure: not fixable by re-prompting
+                raise PlanError(f"Planner LLM call failed: {str(e)[:200]}") from e
+
             md_path, json_path = self.save_plan(plan_obj, project_path)
             print(f"Plan (JSON) saved to: {json_path}")
             print(f"Plan (Markdown) saved to: {md_path}")
-            
             return plan_obj
 
-        except Exception as e:
-            print(f"Error during planning: {e}")
+        repaired = self._repair(last_raw)
+        if repaired is not None:
+            md_path, json_path = self.save_plan(repaired, project_path)
+            print(f"Plan (JSON) saved to: {json_path}")
+            return repaired
+        raise PlanError(f"Planner produced no valid plan after {PLAN_ATTEMPTS} attempts: {last_error[:300]}")
+
+    def _repair(self, raw: str) -> ExecutionPlan | None:
+        """Last resort after the retries: drop ONLY the acceptance checks that are malformed or can never run, keep the rest of the
+        plan, and say so (plan.warnings). A step left with no checks falls back to default verification (syntax of changed files
+        + every command it ran must exit 0), which is weaker but honest. Returns None if the plan is broken in any other way."""
+        import json
+        try:
+            data = json.loads(strip_fences(raw))
+            warnings = []
+            for step in data.get("steps", []):
+                kept = []
+                for entry in step.get("acceptance") or []:
+                    try:
+                        acc = Acceptance.model_validate(entry)
+                        probe = Step(step_id=1, title="t", description="d", acceptance=[acc])
+                        problems = validate_plan(ExecutionPlan(project_id="p", goal="g", steps=[probe]))
+                        problems = [p for p in problems if "no acceptance" not in p]
+                    except Exception as e:
+                        problems = [str(e).splitlines()[-1] if str(e) else "invalid"]
+                    if problems:
+                        warnings.append(f"step {step.get('step_id')}: dropped acceptance check {json.dumps(entry)[:120]}: {problems[0][:160]}")
+                    else:
+                        kept.append(entry)
+                step["acceptance"] = kept
+                if not kept and not step.get("documentation_only"):
+                    step["documentation_only"] = True   # no usable check: default verification applies; flagged below
+                    warnings.append(f"step {step.get('step_id')}: no usable acceptance check; default verification only")
+            plan = ExecutionPlan.model_validate(data)
+            if validate_plan(plan) or not warnings:
+                return None
+            self.last_warnings = warnings
+            for w in warnings:
+                print(f"[Planner] WARNING: {w}")
+            return plan
+        except Exception:
             return None
 
     def save_plan(self, plan: ExecutionPlan, project_path: str) -> tuple[str, str]:
@@ -232,7 +306,10 @@ Please generate an IMPROVED plan that addresses the user's feedback above.
             deps = f" (depends on: {step.dependencies})" if step.dependencies else ""
             md += f"### Step {step.step_id}: {step.title}{deps}\n"
             md += f"{step.description}\n\n"
-            
+            for acc in step.acceptance:
+                md += f"- [ ] check: {acc.model_dump_json(exclude_none=True)}\n"
+            md += "\n"
+
         return md
 
 if __name__ == "__main__":
