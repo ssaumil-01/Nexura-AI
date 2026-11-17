@@ -132,4 +132,5 @@ INDEX_MAX_FILES = env_int("NEXURA_INDEX_MAX_FILES", 5000)
 TOP_K = env_int("NEXURA_TOP_K", 8)
 RRF_K = env_int("NEXURA_RRF_K", 60)
 RETRIEVAL_CONTEXT_BUDGET = env_int("NEXURA_RETRIEVAL_CONTEXT_BUDGET", 40_000)   # characters
+EXECUTION_BACKEND = env_choice("NEXURA_EXECUTION_BACKEND", "local", ("local",))   # only "local" exists (no container backend in V2)
 INDEX_DIR = DATA_DIR / "index"                # index/<workspace_id>/{chroma/, lexical.db, manifest.json}; never inside the workspace

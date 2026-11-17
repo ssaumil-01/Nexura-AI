@@ -1,7 +1,6 @@
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from core.processes import run_bounded
 from core.safety import SafetyError, parse_command
 from tools._ctx import err, get_project
 
@@ -12,13 +11,14 @@ def _run(ctx, command: str, allow_install: bool, timeout: int) -> str:
     except SafetyError as e:
         return err(e.code, e.message)
     try:
-        code, out, timed_out = run_bounded(parsed.argv, str(ctx.root), timeout, ctx.limits.max_tool_output_bytes)
+        r = ctx.backend.run(parsed.argv, str(ctx.root), timeout, max_bytes=ctx.limits.max_tool_output_bytes)
     except OSError as e:
         return err("EXEC_FAILED", str(e))
-    if timed_out:
+    out = r.stdout
+    if r.code == "TIMEOUT":
         return err("TIMEOUT", f"Command timed out after {timeout}s and was killed. Partial output:\n{out}")
-    if code != 0:
-        return f"Command failed (exit code {code}):\n{out}"
+    if not r.ok:
+        return f"Command failed (exit code {r.exit_code}):\n{out}"
     return out if out.strip() else "Command executed successfully (no output)."
 
 
@@ -45,7 +45,7 @@ def start_process(command: str, config: RunnableConfig) -> str:
     ctx = get_project(config)
     try:
         parsed = parse_command(command, ctx.root)
-        handle = ctx.processes.start(parsed.argv, str(ctx.root), command)
+        handle = ctx.backend.start_process(parsed.argv, str(ctx.root), command)
     except SafetyError as e:
         return err(e.code, e.message)
     except OSError as e:
@@ -56,13 +56,14 @@ def start_process(command: str, config: RunnableConfig) -> str:
 @tool
 def read_process_output(handle: str, config: RunnableConfig) -> str:
     """Returns new output (since the last read) and the running/exited status of a background process."""
-    out = get_project(config).processes.read(handle, get_project(config).limits.max_tool_output_bytes)
+    ctx = get_project(config)
+    out = ctx.backend.read_process_output(handle, ctx.limits.max_tool_output_bytes)
     return out if out is not None else err("NO_SUCH_PROCESS", f"No process with handle {handle}.")
 
 
 @tool
 def stop_process(handle: str, config: RunnableConfig) -> str:
     """Stops a background process (and everything it spawned)."""
-    if get_project(config).processes.stop(handle):
+    if get_project(config).backend.stop_process(handle):
         return f"Stopped process {handle}."
     return err("NO_SUCH_PROCESS", f"No process with handle {handle}.")
