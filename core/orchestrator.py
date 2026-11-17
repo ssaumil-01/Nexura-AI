@@ -365,6 +365,15 @@ def approval_node(state: NexuraState, config: RunnableConfig) -> Command:
     return Command(goto="debugger" if state.get("mode") == "debug" else "coder", update=update)
 
 
+def _reindex(ctx, task_id: int, paths: list[str]) -> None:
+    """Keep the code index fresh after edits. An index problem is logged, never fatal (the V1 context builder is the fallback)."""
+    try:
+        r = ctx.indexer.update(paths)
+        ctx.emit("index_updated", task_id, files=len(paths), **(r or {}))
+    except Exception as e:
+        ctx.emit("index_update_failed", task_id, error=redact_secrets(str(e))[:300])
+
+
 def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
     """Runs validated (and, where needed, approved) actions through the execution manager: the only place tools are called."""
     ctx, task = _ctx(config), _cur(state)
@@ -417,6 +426,9 @@ def execute_node(state: NexuraState, config: RunnableConfig) -> dict:
             commands.append({"command": action.command, "exit_code": res.exit_code if res.exit_code is not None else -1})
         if action.action == "task_complete":
             completed = True
+
+    if changes and ctx.indexer is not None:   # invariant: re-indexed before the next task's context is built
+        _reindex(ctx, task["step_id"], [c["file"] for c in changes])
 
     update = {"messages": msgs, "pending": [], "tool_calls_count": count, "changed_files": changed, "task_lines": lines,
               "command_results": commands, "file_changes": state.get("file_changes", []) + changes,

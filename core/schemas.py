@@ -47,6 +47,7 @@ class ProjectContext(BaseModel):
     known_hashes: dict[str, str] = Field(default_factory=dict, exclude=True)   # key -> sha256 Nexura last saw/wrote
     external_edits: set[str] = Field(default_factory=set, exclude=True)        # keys the user edited during the run
     backend: Any = Field(default_factory=lambda: _default_backend(), exclude=True)   # core.execution_backend
+    indexer: Any = Field(default=None, exclude=True)   # rag.indexer.Indexer when code indexing is enabled (V2)
 
     def emit(self, type: str, task_id: int | None = None, agent: str = "orchestrator", **data) -> None:
         """Record a lifecycle event in the state DB and the JSONL log (whichever are attached)."""
