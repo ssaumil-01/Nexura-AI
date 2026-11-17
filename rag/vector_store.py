@@ -83,9 +83,14 @@ class ChromaStore(VectorStore):
 
     def close(self):
         # release file handles (Windows cannot delete an open index otherwise)
-        try:
-            self._client.clear_system_cache()
-        except Exception:
-            pass
+        import gc
+        if self._client is None:
+            return
+        for release in (lambda: self._client._system.stop(), lambda: self._client.clear_system_cache()):
+            try:
+                release()
+            except Exception:
+                pass
         self._col = None
         self._client = None
+        gc.collect()
