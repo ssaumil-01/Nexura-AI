@@ -400,6 +400,11 @@ class IndexManager:
             return None
         return ix
 
+    def existing(self, workspace_id: str) -> Indexer | None:
+        """The workspace's opened index (even while it is still building), so a run's edits keep it fresh."""
+        ix = self._ix.get(workspace_id)
+        return ix if ix is not None and ix.manifest else None
+
     def notify_changes(self, workspace_id: str, paths: list[str]) -> dict | None:
         """External edits (file watcher, undo): re-index those files now if this workspace has an index."""
         ix = self._ix.get(workspace_id)

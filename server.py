@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import re
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -22,6 +23,7 @@ from core.checkpoints import GitError
 from core.orchestrator import build_graph
 from core.run_manager import RunManager, StateError
 from core.runner import DirtyWorkspace, ResumeError
+from core.safety import SafetyError, resolve_in_root
 from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 
 ID = re.compile(r"^[a-f0-9]{8,64}$")
@@ -65,6 +67,14 @@ class EditsReq(BaseModel):
     files: list[str] = Field(max_length=500)
 
 
+class IndexReq(BaseModel):
+    rebuild: bool = False
+
+
+class ChangesReq(BaseModel):
+    paths: list[str] = Field(max_length=1000)
+
+
 def workspace_id_for(path: str) -> str:
     return hashlib.sha256(os.path.normcase(os.path.realpath(path)).encode("utf-8")).hexdigest()[:32]
 
@@ -74,7 +84,7 @@ def _host_name(host_header: str) -> str:
     return h.split("]")[0] + "]" if h.startswith("[") else h.rsplit(":", 1)[0] if ":" in h else h
 
 
-def create_app(token: str | None = None, sm: StateManager | None = None, checkpointer=None) -> FastAPI:
+def create_app(token: str | None = None, sm: StateManager | None = None, checkpointer=None, index_manager=None) -> FastAPI:
     token = token or os.getenv("NEXURA_TOKEN")
     if not token or len(token) < 16:
         raise RuntimeError("NEXURA_TOKEN must be set to a secret of at least 16 characters.")
@@ -84,6 +94,41 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
     sm = sm or StateManager(nexura_config.DB_PATH)
     manager = RunManager(sm, checkpointer or make_checkpointer(nexura_config.CHECKPOINT_DB_PATH), build_graph)
     workspaces: dict[str, dict] = {}   # workspace_id -> {"path", "trusted"} (registered by the extension)
+    ws_events: dict[str, list[dict]] = {}   # workspace_id -> buffered workspace events (index_*), for SSE
+    ws_lock = threading.Lock()
+    index = {"manager": index_manager}
+
+    def ws_emit(workspace_id: str, type: str, data: dict) -> None:
+        with ws_lock:
+            buf = ws_events.setdefault(workspace_id, [])
+            buf.append({"id": (buf[-1]["id"] + 1) if buf else 1, "event": type, "data": data})
+            del buf[:-1000]
+
+    def indexing():
+        """The index manager; 409 when indexing is turned off, 503 when the optional packages are missing."""
+        if not nexura_config.INDEXING_ENABLED and index["manager"] is None:
+            raise HTTPException(status_code=409, detail={"code": "INDEXING_DISABLED",
+                                                         "message": "Code indexing is off (set NEXURA_INDEXING_ENABLED=true)."})
+        if index["manager"] is None:
+            try:
+                from rag.embedder import make_embedder
+                from rag.indexer import IndexManager
+            except ImportError:
+                raise HTTPException(status_code=503, detail={"code": "INDEX_DEPS_MISSING",
+                                                             "message": "Install the indexing packages: pip install -r requirements-index.txt"})
+            index["manager"] = IndexManager(make_embedder, emit=ws_emit)
+        else:
+            index["manager"].emit = ws_emit
+        return index["manager"]
+
+    def reindex_quietly(workspace_id: str, paths: list[str]) -> None:
+        """After undo / external edits: refresh those files in an existing index. Never fails the request."""
+        mgr = index["manager"]
+        if mgr is not None and paths:
+            try:
+                mgr.notify_changes(workspace_id, paths)
+            except Exception as e:
+                ws_emit(workspace_id, "index_update_failed", {"error": str(e)[:300]})
 
     @asynccontextmanager
     async def lifespan(app):
@@ -154,6 +199,8 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
         ctx, state = await asyncio.to_thread(start_errors, lambda: runner.start_run(
             sm, req.workspace_id, ws["path"], req.prompt, approval_level=req.approval_level, git_init=req.git_init,
             dirty_policy=req.dirty_policy, dirty_files=req.dirty_files, trusted=ws["trusted"]))
+        if index["manager"] is not None:   # keep the index fresh while the run edits files
+            ctx.indexer = index["manager"].existing(req.workspace_id)
         manager.start(ctx, state)
         return {"run_id": ctx.run_id}
 
@@ -237,6 +284,7 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
         if req.scope == "task" and req.task_id is None:
             raise HTTPException(status_code=422, detail="task_id is required for scope 'task'.")
         res = await asyncio.to_thread(runner.undo, sm, row.id, req.task_id if req.scope == "task" else None, req.confirm_conflicts)
+        await asyncio.to_thread(reindex_quietly, row.project_id, res.restored + res.deleted)
         return {"applied": res.applied, "restored": res.restored, "deleted": res.deleted, "conflicts": res.conflicts, "error": res.error}
 
     @app.post("/runs/{run_id}/edits", dependencies=[Depends(auth)])
@@ -254,6 +302,65 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
             except ValueError:
                 pass
         return {"marked": marked}
+
+    # ── code index (V2) ──
+    @app.post("/workspaces/{workspace_id}/index", dependencies=[Depends(auth)], status_code=202)
+    async def start_index(workspace_id: str, req: IndexReq):
+        ws = workspace_of(workspace_id)
+        return await asyncio.to_thread(indexing().start, workspace_id, ws["path"], req.rebuild)
+
+    @app.get("/workspaces/{workspace_id}/index", dependencies=[Depends(auth)])
+    async def index_status(workspace_id: str):
+        workspace_of(workspace_id)
+        return indexing().status(workspace_id)
+
+    @app.post("/workspaces/{workspace_id}/index/cancel", dependencies=[Depends(auth)])
+    async def cancel_index(workspace_id: str):
+        workspace_of(workspace_id)
+        return {"cancelled": indexing().cancel(workspace_id)}
+
+    @app.delete("/workspaces/{workspace_id}/index", dependencies=[Depends(auth)])
+    async def delete_index(workspace_id: str):
+        workspace_of(workspace_id)
+        return {"deleted": await asyncio.to_thread(indexing().delete, workspace_id)}
+
+    @app.post("/workspaces/{workspace_id}/index/changes", dependencies=[Depends(auth)])
+    async def index_changes(workspace_id: str, req: ChangesReq):
+        """Files changed outside a run (the extension's file watcher). Paths are checked like any other workspace path."""
+        ws = workspace_of(workspace_id)
+        mgr = indexing()
+        rels = []
+        for f in req.paths:
+            try:
+                full = resolve_in_root(ws["path"], f)
+            except SafetyError as e:
+                raise HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
+            rels.append(os.path.relpath(full, os.path.realpath(ws["path"])).replace("\\", "/"))
+        result = await asyncio.to_thread(mgr.notify_changes, workspace_id, rels)
+        return {"updated": result is not None, **(result or {})}
+
+    @app.get("/workspaces/{workspace_id}/events", dependencies=[Depends(auth)])
+    async def workspace_events(workspace_id: str, last_event_id: Optional[str] = Header(default=None)):
+        """Workspace events (index_started/progress/finished/failed/cancelled). Ends when no indexing job is running."""
+        workspace_of(workspace_id)
+        try:
+            last = int(last_event_id or 0)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid Last-Event-ID.")
+
+        async def gen():
+            nonlocal last
+            while True:
+                with ws_lock:
+                    new = [e for e in ws_events.get(workspace_id, []) if e["id"] > last]
+                for e in new:
+                    last = e["id"]
+                    yield {"id": str(e["id"]), "event": e["event"], "data": json.dumps(e["data"], default=str)}
+                mgr = index["manager"]
+                if not new and (mgr is None or mgr.status(workspace_id).get("state") != "indexing"):
+                    return
+                await asyncio.sleep(0.05)
+        return EventSourceResponse(gen())
 
     @app.get("/metrics/{run_id}", dependencies=[Depends(auth)])
     async def metrics(run_id: str):
