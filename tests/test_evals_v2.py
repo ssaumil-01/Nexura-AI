@@ -156,6 +156,7 @@ def run_oracle(tmp_path, only, sabotage=""):
     return json.loads(files[0].read_text(encoding="utf-8"))
 
 
+@pytest.mark.slow
 def test_oracle_solves_the_offline_v2_tasks(tmp_path):
     ids = [t["id"] for t in TASKS if t["fixture"] in ("inventory_pkg", "buggy_shop")]
     ids += [t["id"] for t in TASKS if t["fixture"] == "flask_notes"] if HAS_FLASK else []
@@ -168,6 +169,7 @@ def test_oracle_solves_the_offline_v2_tasks(tmp_path):
     assert shop["baseline_failed"] == ["tests/test_cart.py::test_total_with_discount"] and shop["regressions"] == []
 
 
+@pytest.mark.slow
 def test_an_unsolved_v2_task_fails(tmp_path):
     doc = run_oracle(tmp_path, ["bs_fix_bug", "inv_validation"], sabotage="bs_fix_bug")
     res = {r["id"]: r for r in doc["results"]}

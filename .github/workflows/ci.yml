@@ -22,7 +22,7 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: pytest -q
+      - run: pytest -q --runslow
       - run: python evals/run.py --fake --out evals/results/_ci
 
   extension:

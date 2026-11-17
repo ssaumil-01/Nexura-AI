@@ -27,6 +27,7 @@ def run_oracle(tmp_path, only, sabotage=""):
     return {r["id"]: r for r in json.loads(files[0].read_text(encoding="utf-8"))["results"]}
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
 def test_oracle_solves_every_offline_task(tmp_path):
     ids = OFFLINE + (["node_script"] if shutil.which("node") else [])
@@ -36,6 +37,7 @@ def test_oracle_solves_every_offline_task(tmp_path):
     assert all(r["run_status"] == "completed" for r in results.values())
 
 
+@pytest.mark.slow
 def test_a_wrong_solution_is_reported_as_failure_not_success(tmp_path):
     results = run_oracle(tmp_path, ["calc_cli", "csv_report"], sabotage="calc_cli")
     assert results["calc_cli"]["passed"] is False                      # our independent checks catch it

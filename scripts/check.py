@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 STEPS = [
     ("lint (ruff)", [PY, "-m", "ruff", "check", "."], ROOT),
-    ("unit + integration tests (pytest)", [PY, "-m", "pytest", "-q"], ROOT),
+    ("unit + integration tests (pytest)", [PY, "-m", "pytest", "-q", "--runslow"], ROOT),
     ("eval smoke (fake model)", [PY, "evals/run.py", "--fake", "--out", str(ROOT / "evals" / "results" / "_ci")], ROOT),
 ]
 EXT = [
