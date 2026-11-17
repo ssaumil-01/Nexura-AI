@@ -78,3 +78,18 @@ def test_without_an_indexer_nothing_changes(tmp_path, monkeypatch, fake_llm, git
     sm, ctx, values = run_with(tmp_path, monkeypatch, fake_llm, git_repo, None)
     assert values["run_status"] == "completed"
     assert not [e for e in sm.list_events(ctx.run_id) if e["type"].startswith("index_")]
+
+
+def test_cli_starts_a_background_index_and_attaches_it(tmp_path, monkeypatch, git_repo):
+    import main
+    import rag.embedder
+    from rag.embedder import FakeEmbedder
+    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / "index")
+    monkeypatch.setattr(rag.embedder, "make_embedder", lambda cache_dir=None: FakeEmbedder(dim=16))
+    (git_repo / "tool.py").write_text("def tool():\n    return 1\n", encoding="utf-8")
+    ix = main.start_index(git_repo)
+    deadline = __import__("time").time() + 60
+    while not ix.ready() and __import__("time").time() < deadline:
+        __import__("time").sleep(0.05)
+    assert ix.ready() and "tool" in {c.symbol for c in ix.lexical.chunks_of("tool.py")}
+    ix.close()

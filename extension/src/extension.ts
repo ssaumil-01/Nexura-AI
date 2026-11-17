@@ -62,6 +62,7 @@ export function activate(context: vscode.ExtensionContext): NexuraApi {
     vscode.commands.registerCommand("nexura.setGroqKey", () => setKey(context, backend, controller, SECRET_GROQ, "Groq")),
     vscode.commands.registerCommand("nexura.showLogs", () => out.show(true)),
     vscode.commands.registerCommand("nexura.restartBackend", () => backend.restart()),
+    vscode.commands.registerCommand("nexura.debugRetrieval", () => controller.debugRetrieval()),
   );
 
   const started = backend.start().catch((e) => out.appendLine(`[backend] failed to start: ${e instanceof Error ? e.message : e}`));

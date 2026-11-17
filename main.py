@@ -83,6 +83,23 @@ def _print_event(event):
                     print(f"  [{msg.name}] -> {msg.content[:200]}")
 
 
+def start_index(root):
+    """V2: index the workspace in the background (the run uses the V1 context until it is ready). None if unavailable."""
+    try:
+        from rag.embedder import make_embedder
+        from rag.indexer import IndexManager
+    except ImportError:
+        print("[Index] indexing packages not installed (pip install -r requirements-index.txt); using the basic context.")
+        return None
+    from core.runner import workspace_id_for
+    wid = workspace_id_for(str(root))
+    mgr = IndexManager(make_embedder, emit=lambda w, t, d: print(f"[Index] {t} {d}") if t != "index_progress" else None)
+    mgr.start(wid, root)
+    ix = mgr.indexer(wid, root)
+    ix.open()   # so the run's edits keep the index fresh while it builds
+    return ix
+
+
 def main():
     parser = argparse.ArgumentParser(description="Nexura AI - Autonomous Coding Agent")
     parser.add_argument("--prompt", type=str, help="Natural language request for the project")
@@ -134,6 +151,9 @@ def main():
     except GitError as e:
         print(f"Cannot start: {e.message}" + ("\nRe-run with --git-init to create a repository here." if e.code == "NOT_A_REPO" else ""))
         sys.exit(2)
+
+    if nexura_config.INDEXING_ENABLED:
+        project.indexer = start_index(project.root)
 
     graph = build_graph(interactive=args.interactive, checkpointer=make_checkpointer(nexura_config.CHECKPOINT_DB_PATH))
 

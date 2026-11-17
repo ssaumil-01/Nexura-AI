@@ -127,3 +127,32 @@ def test_undo_reindexes_restored_files(client, monkeypatch):
     assert r.status_code == 200, r.text
     assert {c.symbol for c in ix.lexical.chunks_of("app.py")} == {"handler"}
     json.dumps(r.json())
+
+
+# ─── V2-3.7: debug retrieval ────────────────────────────────
+
+def test_debug_retrieve_needs_token_and_a_ready_index(client):
+    bare = TestClient(client.app, base_url="http://127.0.0.1")
+    assert bare.get(f"/workspaces/{client.wid}/retrieve", params={"q": "handler"}).status_code == 401
+    r = client.get(f"/workspaces/{client.wid}/retrieve", params={"q": "handler"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "INDEX_NOT_READY"
+    assert client.get(f"/workspaces/{client.wid}/retrieve", params={"q": ""}).status_code == 422
+    assert client.get(f"/workspaces/{client.wid}/retrieve", params={"q": "x", "k": 999}).status_code == 422
+
+
+def test_debug_retrieve_returns_reasons_and_never_unsafe_content(client):
+    client.post(f"/workspaces/{client.wid}/index", json={})
+    wait_ready(client)
+    res = client.get(f"/workspaces/{client.wid}/retrieve", params={"q": "handler request", "k": 5}).json()["results"]
+    assert res[0]["path"] == "app.py" and res[0]["symbol"] == "handler" and res[0]["sources"] and res[0]["reason"]
+    secret = "AIza" + "Z" * 35
+    (client.repo / "app.py").write_text(f"def handler(request):\n    key = '{secret}'\n    return 'ok'\n", encoding="utf-8")
+    res = client.get(f"/workspaces/{client.wid}/retrieve", params={"q": "handler request"}).json()["results"]
+    assert all(secret not in r["snippet"] and r["path"] != "app.py" for r in res)     # stale + now secret: filtered out
+
+
+def test_retrieval_events_reach_the_run_stream():
+    from core.run_manager import _map_db_event
+    for t in ("retrieval", "retrieval_fallback", "index_updated", "index_update_failed"):
+        [(name, data)] = _map_db_event({"type": t, "task_id": 3, "data": {"reason": "x"}})
+        assert name == t and data["task_id"] == 3

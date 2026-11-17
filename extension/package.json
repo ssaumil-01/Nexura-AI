@@ -32,7 +32,8 @@
       { "command": "nexura.setGeminiKey", "title": "Set Gemini API Key", "category": "Nexura" },
       { "command": "nexura.setGroqKey", "title": "Set Groq API Key", "category": "Nexura" },
       { "command": "nexura.showLogs", "title": "Show Logs", "category": "Nexura" },
-      { "command": "nexura.restartBackend", "title": "Restart Backend", "category": "Nexura" }
+      { "command": "nexura.restartBackend", "title": "Restart Backend", "category": "Nexura" },
+      { "command": "nexura.debugRetrieval", "title": "Debug Retrieval", "category": "Nexura" }
     ],
     "configuration": {
       "title": "Nexura",

@@ -1,7 +1,6 @@
 """Nexura local API. Binds to 127.0.0.1 only; every request needs `Authorization: Bearer <NEXURA_TOKEN>`.
 The workspace path is registered once (POST /workspaces) and never taken from a request body afterwards."""
 import asyncio
-import hashlib
 import hmac
 import json
 import os
@@ -11,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -22,7 +21,7 @@ from core import runner
 from core.checkpoints import GitError
 from core.orchestrator import build_graph
 from core.run_manager import RunManager, StateError
-from core.runner import DirtyWorkspace, ResumeError
+from core.runner import DirtyWorkspace, ResumeError, workspace_id_for
 from core.safety import SafetyError, resolve_in_root
 from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 
@@ -73,10 +72,6 @@ class IndexReq(BaseModel):
 
 class ChangesReq(BaseModel):
     paths: list[str] = Field(max_length=1000)
-
-
-def workspace_id_for(path: str) -> str:
-    return hashlib.sha256(os.path.normcase(os.path.realpath(path)).encode("utf-8")).hexdigest()[:32]
 
 
 def _host_name(host_header: str) -> str:
@@ -338,6 +333,27 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
             rels.append(os.path.relpath(full, os.path.realpath(ws["path"])).replace("\\", "/"))
         result = await asyncio.to_thread(mgr.notify_changes, workspace_id, rels)
         return {"updated": result is not None, **(result or {})}
+
+    @app.get("/workspaces/{workspace_id}/retrieve", dependencies=[Depends(auth)])
+    async def debug_retrieve(workspace_id: str, q: str = Query(min_length=1, max_length=2000), k: int = Query(default=8, ge=1, le=50)):
+        """Read-only: what retrieval returns for a query, with sources and reasons. Same safety filter as the prompt context."""
+        ws = workspace_of(workspace_id)
+        ix = indexing().ready_indexer(workspace_id)
+        if ix is None:
+            raise HTTPException(status_code=409, detail={"code": "INDEX_NOT_READY", "message": "Build the index first."})
+
+        def run():
+            from core.context_builder import safe_snippet
+            from core.safety import load_ignore_patterns
+            patterns, cache, out = load_ignore_patterns(ws["path"]), {}, []
+            for r in ix.retriever().retrieve(q, k=k):
+                snippet = safe_snippet(Path(ws["path"]), r.chunk, patterns, cache)
+                if snippet is not None:
+                    out.append({"path": r.chunk.path, "lines": [r.chunk.start_line, r.chunk.end_line], "symbol": r.chunk.symbol,
+                                "kind": r.chunk.kind, "score": r.score, "sources": r.sources, "reason": r.reason,
+                                "snippet": "\n".join(snippet.splitlines()[:30])})
+            return out
+        return {"query": q, "results": await asyncio.to_thread(run)}
 
     @app.get("/workspaces/{workspace_id}/events", dependencies=[Depends(auth)])
     async def workspace_events(workspace_id: str, last_event_id: Optional[str] = Header(default=None)):

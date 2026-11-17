@@ -209,6 +209,17 @@ export class RunController implements vscode.Disposable {
       case "run_finished":
         this.add(d.run_status === "completed" ? "ok" : "error", `Run finished: ${d.run_status}`);
         break;
+      case "retrieval": {   // debug detail: Output channel only, not the sidebar log
+        const hits = (d.results ?? []).filter((r: any) => r.included).map((r: any) => `${r.path}:${r.lines} [${(r.sources ?? []).join("+")}]`);
+        this.out.appendLine(`[debug] task ${d.task_id} retrieval: ${hits.length} chunk(s) ${hits.join(", ")}`);
+        break;
+      }
+      case "retrieval_fallback":
+        this.add("warn", `Retrieval unavailable, using the basic context: ${d.reason}`);
+        break;
+      case "index_update_failed":
+        this.out.appendLine(`[debug] index update failed: ${d.error}`);
+        break;
     }
     this.syncing = this.syncing.then(() => this.sync(client));
   }
@@ -241,6 +252,30 @@ export class RunController implements vscode.Disposable {
   async openDiff(file?: string): Promise<void> {
     const d = this.run?.approval?.diffs.find((x) => x.file === file) ?? this.run?.approval?.diffs[0];
     if (d) await this.diffs.open(d);
+  }
+
+  /** "Nexura: Debug Retrieval": show what the code index returns for a query (read-only). */
+  async debugRetrieval(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      void vscode.window.showWarningMessage("Nexura: open a folder first.");
+      return;
+    }
+    const q = await vscode.window.showInputBox({ prompt: "Nexura: what should retrieval look for?", ignoreFocusOut: true });
+    if (!q?.trim()) return;
+    const c = await this.client();
+    if (!c) return;
+    try {
+      const { workspace_id } = await c.registerWorkspace(folder.uri.fsPath, vscode.workspace.isTrusted);
+      const { results } = await c.retrieve(workspace_id, q.trim());
+      this.out.appendLine(`[retrieval] "${q.trim()}": ${results.length} result(s)`);
+      for (const r of results) {
+        this.out.appendLine(`  ${r.score.toFixed(4)}  ${r.path}:${r.lines[0]}-${r.lines[1]}  ${r.symbol || r.kind}  [${r.sources.join("+")}]  ${r.reason}`);
+      }
+      this.out.show(true);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Nexura retrieval: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   private async client(): Promise<ApiClient | undefined> {

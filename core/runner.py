@@ -1,4 +1,6 @@
 """Shared run setup for the CLI and the API: start a run, rebuild one for resume, undo."""
+import hashlib
+import os
 import uuid
 from pathlib import Path
 
@@ -9,6 +11,11 @@ from core.safety import load_ignore_patterns
 from core.schemas import ProjectContext
 from core.state_manager import StateManager
 from core.checkpoints import GitError, UndoResult  # noqa: F401  (re-exported for callers)
+
+
+def workspace_id_for(path: str) -> str:
+    """Stable id of a workspace folder (the API's workspace_id and the code index folder name)."""
+    return hashlib.sha256(os.path.normcase(os.path.realpath(path)).encode("utf-8")).hexdigest()[:32]
 
 
 class ResumeError(RuntimeError):

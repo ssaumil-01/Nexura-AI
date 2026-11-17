@@ -18,7 +18,7 @@ import config as app_config
 from agents import coder, debugger
 from core import execution_manager as em
 from core import approvals, checkpoints, retry_manager, validator, verification
-from core.context_builder import build_context
+from core.context_builder import build_task_context
 from core.safety import SafetyError, redact_secrets, resolve_in_root
 from core.schemas import Action
 from core.state import NexuraState
@@ -171,7 +171,7 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
             return {**_fail(f"CHECKPOINT_FAILED: {e.message}"), "task_status": {**(state.get("task_status") or {}), str(task["step_id"]): "running"}}
 
     run_changed = [fc["file"] for fc in state.get("file_changes", [])]
-    workspace_context, breakdown = build_context(task, ctx.root, run_changed, redact=redact_secrets)
+    workspace_context, breakdown = build_task_context(task, ctx, run_changed)
     print(f"  [Context] {breakdown}")
 
     history_summary = "No previous executions yet."

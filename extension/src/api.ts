@@ -33,6 +33,17 @@ export interface UndoResult {
   error: string | null;
 }
 
+export interface RetrievalResult {
+  path: string;
+  lines: [number, number];
+  symbol: string;
+  kind: string;
+  score: number;
+  sources: string[];
+  reason: string;
+  snippet: string;
+}
+
 export interface StartRunBody {
   workspace_id: string;
   prompt: string;
@@ -96,6 +107,10 @@ export class ApiClient {
   }
   edits(id: string, files: string[]) {
     return this.req("POST", `/runs/${id}/edits`, { files });
+  }
+  retrieve(workspaceId: string, q: string, k = 8) {
+    return this.req<{ query: string; results: RetrievalResult[] }>(
+      "GET", `/workspaces/${workspaceId}/retrieve?q=${encodeURIComponent(q)}&k=${k}`);
   }
 
   /**

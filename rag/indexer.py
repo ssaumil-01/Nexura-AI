@@ -298,6 +298,10 @@ class Indexer:
         return result
 
     # ── state ──
+    def retriever(self):
+        from rag.retriever import Retriever
+        return Retriever(self)
+
     def ready(self) -> bool:
         return bool(self.manifest.get("complete")) and self.manifest.get("embedding_model") == self.embedder.model_id
 
