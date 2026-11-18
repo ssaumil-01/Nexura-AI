@@ -209,6 +209,19 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
         return {"run_id": row.id, "status": row.status, "error": row.error, "prompt": row.prompt, "tasks": tasks,
                 "state": state, "waiting": waiting, "summary": summary, "plan": row.plan}
 
+    @app.get("/runs/{run_id}/plans", dependencies=[Depends(auth)])
+    async def plan_versions(run_id: str):
+        row = run_or_404(run_id)
+        return {"run_id": row.id, "versions": sm.list_plan_versions(row.id)}
+
+    @app.get("/runs/{run_id}/plans/{version}", dependencies=[Depends(auth)])
+    async def plan_version(run_id: str, version: int):
+        row = run_or_404(run_id)
+        v = sm.get_plan_version(row.id, version)
+        if v is None:
+            raise HTTPException(status_code=404, detail="No such plan version.")
+        return v
+
     @app.get("/runs/{run_id}/events", dependencies=[Depends(auth)])
     async def run_events(run_id: str, last_event_id: Optional[str] = Header(default=None)):
         row = run_or_404(run_id)

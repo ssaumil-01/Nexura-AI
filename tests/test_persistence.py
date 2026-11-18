@@ -63,8 +63,8 @@ SECOND = [tool_call_msg("task_complete", {"summary": "ok"}, "c3")]
 
 def test_schema_version_and_round_trip(tmp_path):
     sm = StateManager(tmp_path / "x.db")
-    assert sm.schema_version() == 2
-    assert StateManager(tmp_path / "x.db").schema_version() == 2  # re-open: no re-migration
+    assert sm.schema_version() == 3
+    assert StateManager(tmp_path / "x.db").schema_version() == 3  # re-open: no re-migration
     sm.upsert_project("p", "/w")
     sm.create_run("r1", "p", "prompt", "ask_risky")
     sm.save_plan("r1", PLAN, load_tasks(PLAN))

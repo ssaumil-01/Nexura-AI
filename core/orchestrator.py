@@ -104,7 +104,7 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
     tasks = plan_dict.get("steps", [])
     print(f"[Planner] Generated {len(tasks)} tasks for project: {plan_dict.get('project_id', 'unknown')}")
     if ctx.state_manager is not None:
-        ctx.state_manager.save_plan(ctx.run_id, plan_dict, load_tasks(plan_dict))
+        ctx.state_manager.save_plan(ctx.run_id, plan_dict, load_tasks(plan_dict), feedback=feedback)
     return {
         "plan": plan_dict, "tasks": tasks, "current_task_index": 0, "plan_feedback": None,
         "task_status": {str(t["step_id"]): "pending" for t in tasks}, "task_errors": {},
