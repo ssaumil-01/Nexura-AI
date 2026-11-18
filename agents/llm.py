@@ -54,12 +54,13 @@ TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTE
                        r"ConnectionError|ReadError|RemoteProtocolError", re.IGNORECASE)
 
 
-QUOTA = re.compile(r"PerDay|per day limit|limit exceeded on free tier", re.IGNORECASE)
+QUOTA = re.compile(r"PerDay|per day", re.IGNORECASE)    # per-MINUTE limits ("tokens per minute ... exceeded on Free Tier") are transient
+RETRY_DELAY = re.compile(r"(?:retryDelay['\": ]+|retry in )(\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
 def quota_message(error_text: str) -> str | None:
     """A DAILY/long quota exhaustion is not transient: waiting a few seconds will not help, so fail fast with a clear message."""
-    m = re.search(r"retryDelay['\": ]+(\d+(?:\.\d+)?)s", error_text)
+    m = RETRY_DELAY.search(error_text)
     delay = float(m.group(1)) if m else 0.0
     if QUOTA.search(error_text) or delay > 300:
         when = f" (resets in about {delay / 3600:.0f}h)" if delay > 3600 else ""
@@ -73,7 +74,7 @@ def is_rate_limit(error_text: str) -> bool:
 
 def backoff_delay(attempt: int, error_text: str) -> float:
     """Seconds to wait after a rate limit: server's retryDelay if present, else exponential; plus jitter."""
-    m = re.search(r"retryDelay['\": ]+(\d+(?:\.\d+)?)s", error_text)
+    m = RETRY_DELAY.search(error_text)
     base = float(m.group(1)) + 2 if m else min(5 * 2 ** attempt, 60)
     return min(base, 120) + random.uniform(0, base * 0.25)
 
