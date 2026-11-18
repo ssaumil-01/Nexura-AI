@@ -6,6 +6,7 @@
     python evals/run.py --only calc_cli,todo_cli    # real model (needs GOOGLE_API_KEY + CODER/PLANNER_MODEL_NAME)
     python evals/run.py                             # all V1 tasks with the real model, 3 repeats each
     python evals/run.py --tasks evals/tasks_v2.yaml --retrieval-mode v2   # V2 tasks on existing-project fixtures
+    python evals/run.py --tasks evals/tasks_v2.yaml --retrieval-mode v2 --patch-mode v2 --model-dir <folder with the local model>
 
 V2 tasks start from a fixture project (evals/fixtures/<name>). Before and after the run the fixture's own test suite is run,
 and tests that passed before but fail after are recorded as regressions. Results: evals/results/<date>.json; compare runs
@@ -191,8 +192,17 @@ def run_task(task: dict, repeat: int, work: Path, args) -> dict:
     fixture = args.fixtures.get(task.get("fixture")) if task.get("fixture") else None
     before = test_failures(ws, fixture) if fixture else set()
     sm = StateManager(work / "data" / "nexura.db")
+    ix = None
     try:
         ctx, state = start_run(sm, f"eval-{task['id']}-{repeat}", ws, task["prompt"], approval_level=args.approval)
+        if args.retrieval_mode == "v2":   # the index of this workspace, built before the run (its time is recorded)
+            from rag.indexer import Indexer
+            ti = time.time()
+            ix = Indexer(ws, f"eval-{task['id']}-{repeat}", args.embedder_factory())
+            ix.open()
+            ix.build()
+            ctx.indexer = ix
+            rec["index_s"], rec["index_chunks"] = round(time.time() - ti, 1), ix.status()["chunks"]
         graph = build_graph(checkpointer=InMemorySaver())
         cfg = {"configurable": {"thread_id": ctx.run_id, "project": ctx}, "recursion_limit": 1000}
         values, approvals = drive(graph, state, cfg, t0 + args.timeout)
@@ -204,6 +214,8 @@ def run_task(task: dict, repeat: int, work: Path, args) -> dict:
             retries=sum((m.get("retries_per_task") or {}).values()), error_types=m.get("error_types"),
             tool_calls=sum(1 for e in events if e["type"] == "tool_call"),
             llm_calls=sum(1 for e in events if e["type"] == "llm_call"), approvals=approvals, tokens=m.get("tokens"),
+            retrieval_fallbacks=sum(1 for e in events if e["type"] == "retrieval_fallback"),
+            retrievals=sum(1 for e in events if e["type"] == "retrieval"), planner_context=any(e["type"] == "planner_context" for e in events),
             task_errors=values.get("task_errors"), run_error=values.get("run_error"))
         rec["checks"] = run_checks(task, ws, work / "checks")
         rec["passed"] = all(c["ok"] for c in rec["checks"])
@@ -212,6 +224,12 @@ def run_task(task: dict, repeat: int, work: Path, args) -> dict:
             rec["baseline_failed"] = sorted(before)
     except Exception as e:   # an eval must never take the whole run down
         rec["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    finally:
+        if ix is not None:
+            try:
+                ix.close()
+            except Exception:
+                pass
     rec["time_s"] = round(time.time() - t0, 1)
     return rec
 
@@ -256,6 +274,8 @@ def main() -> int:
     ap.add_argument("--oracle", action="store_true", help="scripted correct solutions for every task (no LLM): checks the pipeline itself")
     ap.add_argument("--no-venv", action="store_true", help="oracle only: run agent commands in the current environment")
     ap.add_argument("--retrieval-mode", choices=["v1", "v2"], default=config.RETRIEVAL_MODE, help="context builder to use (V2)")
+    ap.add_argument("--patch-mode", choices=["v1", "v2"], default=config.PATCH_MODE, help="file editing: v1 patch_file or v2 apply_patch")
+    ap.add_argument("--model-dir", default=None, help="v2 with a real model: folder holding the local embedding model (offline use)")
     ap.add_argument("--repeat", type=int, default=None, help="runs per task (default 3 with a real model, 1 for --fake/--oracle)")
     ap.add_argument("--approval", default="auto_within_limits", choices=["ask_every_edit", "ask_risky", "auto_within_limits"])
     ap.add_argument("--timeout", type=int, default=900, help="soft time limit per task, seconds")
@@ -279,6 +299,13 @@ def main() -> int:
 
     config.RETRIEVAL_MODE = args.retrieval_mode
     os.environ["NEXURA_RETRIEVAL_MODE"] = args.retrieval_mode
+    config.PATCH_MODE = args.patch_mode
+    os.environ["NEXURA_PATCH_MODE"] = args.patch_mode
+    config.PROMPT_VERSIONS.update(coder="3" if args.patch_mode == "v2" else "2", debugger="2" if args.patch_mode == "v2" else "1")
+    if args.retrieval_mode == "v2":
+        from rag.embedder import FakeEmbedder, LocalEmbedder
+        args.embedder_factory = (lambda: FakeEmbedder(dim=64)) if scripted else (
+            lambda: LocalEmbedder(config.EMBEDDING_MODEL, cache_dir=args.model_dir))
     if args.fake:
         from core import fake_llm
         fake_llm.install()
@@ -298,6 +325,7 @@ def main() -> int:
 
     work = Path(tempfile.mkdtemp(prefix="nexura-evals-"))
     config.DATA_DIR = work / "data"
+    config.INDEX_DIR = work / "index"
     results = []
     for t in tasks:
         reason = missing_need(t)
@@ -322,10 +350,12 @@ def main() -> int:
                "approvals": sum(r.get("approvals") or 0 for r in ran), "time_s": round(sum(r["time_s"] for r in ran), 1),
                "tokens": sum(r.get("tokens") or 0 for r in ran) or None,
                "tokens_per_run": spread([r.get("tokens") for r in ran]),
-               "regressions": sum(len(r.get("regressions") or []) for r in ran)}
+               "regressions": sum(len(r.get("regressions") or []) for r in ran),
+               "retrieval_fallbacks": sum(r.get("retrieval_fallbacks") or 0 for r in ran),
+               "index_s": spread([r.get("index_s") for r in ran])}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     doc = {"date": datetime.now().isoformat(timespec="seconds"), "commit": commit, "fake_llm": scripted, "oracle": args.oracle,
-           "tasks_file": Path(args.tasks).name, "retrieval_mode": args.retrieval_mode, "temperature": config.TEMPERATURE,
+           "tasks_file": Path(args.tasks).name, "retrieval_mode": args.retrieval_mode, "patch_mode": args.patch_mode, "temperature": config.TEMPERATURE,
            "coder_model": "oracle" if args.oracle else "fake" if args.fake else os.getenv("CODER_MODEL_NAME"),
            "planner_model": "oracle" if args.oracle else "fake" if args.fake else os.getenv("PLANNER_MODEL_NAME"),
            "approval_level": args.approval, "prompt_versions": config.PROMPT_VERSIONS, "summary": summary,

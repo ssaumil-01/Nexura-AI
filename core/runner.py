@@ -7,7 +7,7 @@ from pathlib import Path
 import config
 from core import checkpoints
 from core.runlog import RunLogger
-from core.safety import load_ignore_patterns
+from core.safety import load_ignore_patterns, valid_extra_names
 from core.schemas import ProjectContext
 from core.state_manager import StateManager
 from core.checkpoints import GitError, UndoResult  # noqa: F401  (re-exported for callers)
@@ -46,7 +46,9 @@ def _context(sm: StateManager, run_id: str, project_id: str, root: Path, approva
         logger=RunLogger(run_dir / "log.jsonl", project_id, run_id),
         approval_level=approval_level or config.APPROVAL_LEVEL, trusted=trusted,
         dirty_files={d.replace("\\", "/").lower() for d in editor_dirty},
-        ignore_patterns=load_ignore_patterns(root, include_defaults=False), git_checkpoints=git)
+        ignore_patterns=load_ignore_patterns(root, include_defaults=False), git_checkpoints=git,
+        extra_commands=valid_extra_names(sm.list_commands(project_id)), baseline=sm.get_baseline(run_id))
+
 
 
 def _prepare_git(root: Path, run_id: str, dirty_policy: str, git_init: bool) -> None:
@@ -64,8 +66,9 @@ def _prepare_git(root: Path, run_id: str, dirty_policy: str, git_init: bool) -> 
 def start_run(sm: StateManager, project_id: str, root: str | Path, prompt: str, interactive: bool = False,
               approval_level: str | None = None, *, require_git: bool = True, git_init: bool = False,
               dirty_policy: str = "checkpoint", dirty_files: list[str] | None = None,
-              trusted: bool = True) -> tuple[ProjectContext, dict]:
-    """Raises GitError(NOT_A_REPO), DirtyWorkspace, or WorkspaceBusy. `require_git=False` exists for unit tests only."""
+              trusted: bool = True, baseline_command: str | None = None) -> tuple[ProjectContext, dict]:
+    """Raises GitError(NOT_A_REPO), DirtyWorkspace, or WorkspaceBusy. `require_git=False` exists for unit tests only.
+    `baseline_command`: the test command the user approved running before and after the run (V2 regression check)."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex[:12]
@@ -79,6 +82,7 @@ def start_run(sm: StateManager, project_id: str, root: str | Path, prompt: str, 
         sm.release_lock(run_id)
         raise
     ctx = _context(sm, run_id, project_id, root, approval_level, trusted, dirty_files or [], require_git)
+    ctx.baseline_command = baseline_command
     ctx.emit("run_started", prompt=prompt[:200])
     return ctx, initial_state(prompt, root, interactive)
 
@@ -111,6 +115,8 @@ def prepare_resume(sm: StateManager, run_id: str, interactive: bool = False, *, 
             sm.mark_task(run_id, s["step_id"], "pending", attempts=0, reason=None)
     sm.reopen_run(run_id)
     ctx = _context(sm, run_id, run.project_id, Path(root), run.approval_level, trusted, dirty_files or [], require_git)
+    if ctx.baseline:   # a resumed run keeps its baseline and is still checked for regressions at the end
+        ctx.baseline_command = ctx.baseline.get("command")
     ctx.emit("run_resumed", first_task=steps[first]["step_id"])
     state = initial_state(run.prompt, root, interactive, plan=run.plan, tasks=steps, task_status=status,
                           current_task_index=first, run_status="running", resuming=True,

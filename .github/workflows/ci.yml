@@ -12,6 +12,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:                                  # embedding models are NEVER downloaded in CI (tests use FakeEmbedder)
+      NEXURA_ALLOW_MODEL_DOWNLOAD: "0"
+      HF_HUB_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }          # the scope audit diffs against the base commit

@@ -7,7 +7,7 @@ from tools._ctx import err, get_project
 
 def _run(ctx, command: str, allow_install: bool, timeout: int) -> str:
     try:
-        parsed = parse_command(command, ctx.root, allow_install=allow_install)
+        parsed = parse_command(command, ctx.root, allow_install=allow_install, extra_allowed=ctx.extra_commands)
     except SafetyError as e:
         return err(e.code, e.message)
     try:
@@ -44,7 +44,7 @@ def start_process(command: str, config: RunnableConfig) -> str:
     Use read_process_output to see logs and stop_process to stop it. All processes are stopped when the task ends."""
     ctx = get_project(config)
     try:
-        parsed = parse_command(command, ctx.root)
+        parsed = parse_command(command, ctx.root, extra_allowed=ctx.extra_commands)
         handle = ctx.backend.start_process(parsed.argv, str(ctx.root), command)
     except SafetyError as e:
         return err(e.code, e.message)

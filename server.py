@@ -22,7 +22,8 @@ from core.checkpoints import GitError
 from core.orchestrator import build_graph
 from core.run_manager import RunManager, StateError
 from core.runner import DirtyWorkspace, ResumeError, workspace_id_for
-from core.safety import SafetyError, resolve_in_root
+from core.project_profile import detect_profile, needed_executables
+from core.safety import SafetyError, resolve_in_root, valid_extra_names
 from core.state_manager import StateManager, WorkspaceBusy, make_checkpointer
 
 ID = re.compile(r"^[a-f0-9]{8,64}$")
@@ -44,6 +45,20 @@ class RunReq(BaseModel):
     dirty_policy: Literal["checkpoint", "abort"] = "checkpoint"
     dirty_files: list[str] = Field(default_factory=list, max_length=500)
     git_init: bool = False
+    baseline: bool = False       # the user approved running the project's test command before and after the run
+    subproject: str = Field(default="", max_length=512)   # monorepo: the folder this run targets ("" = whole workspace)
+
+
+class ProfileReq(BaseModel):
+    overrides: dict = Field(default_factory=dict)
+
+
+class DetectReq(BaseModel):
+    subproject: str = Field(default="", max_length=512)
+
+
+class CommandReq(BaseModel):
+    exe: str = Field(min_length=1, max_length=40)
 
 
 class PlanReq(BaseModel):
@@ -54,6 +69,7 @@ class PlanReq(BaseModel):
 class ApproveReq(BaseModel):
     decision: Literal["approve", "reject"]
     note: Optional[str] = Field(default=None, max_length=2000)
+    rejected_files: list[str] = Field(default_factory=list, max_length=200)   # approve the rest, reject changes to these files
 
 
 class UndoReq(BaseModel):
@@ -188,12 +204,113 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
         sm.upsert_project(wid, str(p.resolve()))
         return {"workspace_id": wid}
 
+    def summary_ctx(workspace_id: str, ws: dict):
+        from core.schemas import ProjectContext
+        return ProjectContext(run_id=f"ws-{workspace_id[:8]}", root=Path(ws["path"]), project_id=workspace_id, state_manager=sm,
+                              extra_commands=valid_extra_names(sm.list_commands(workspace_id)))
+
+    def profile_view(workspace_id: str, ws: dict) -> dict:
+        from core.planner_context import effective_profile
+        ctx = summary_ctx(workspace_id, ws)
+        effective = effective_profile(ctx)                      # detects and stores on first use
+        stored = sm.get_profile(workspace_id) or {}
+        granted = sm.list_commands(workspace_id)
+        summary = sm.get_repo_summary(workspace_id)
+        return {"profile": effective.model_dump(), "detected": stored.get("detected", {}), "overrides": stored.get("overrides", {}),
+                "granted_commands": granted, "approvable_commands": nexura_config.EXTRA_COMMAND_CANDIDATES,
+                "needs_approval": [e for e in needed_executables(effective) if e not in granted],
+                "summary": summary["summary"] if summary else None}
+
+    @app.get("/workspaces/{workspace_id}/profile", dependencies=[Depends(auth)])
+    async def get_profile(workspace_id: str):
+        return await asyncio.to_thread(profile_view, workspace_id, workspace_of(workspace_id))
+
+    @app.post("/workspaces/{workspace_id}/profile/detect", dependencies=[Depends(auth)])
+    async def redetect_profile(workspace_id: str, req: DetectReq):
+        ws = workspace_of(workspace_id)
+        try:
+            detected = await asyncio.to_thread(detect_profile, ws["path"], req.subproject)
+        except SafetyError as e:
+            raise HTTPException(status_code=422, detail=e.message)
+        sm.save_profile(workspace_id, detected.model_dump())
+        return await asyncio.to_thread(profile_view, workspace_id, ws)
+
+    @app.put("/workspaces/{workspace_id}/profile", dependencies=[Depends(auth)])
+    async def put_profile(workspace_id: str, req: ProfileReq):
+        """The user's overrides win over detection. Unknown fields and wrong types are dropped, not stored."""
+        from core.project_profile import LIST_FIELDS, ProjectProfile, apply_overrides
+        ws = workspace_of(workspace_id)
+        await asyncio.to_thread(profile_view, workspace_id, ws)       # make sure a detection is stored
+        clean = {k: v for k, v in req.overrides.items()
+                 if (k in LIST_FIELDS and isinstance(v, list) and all(isinstance(x, str) and len(x) <= 500 for x in v) and len(v) <= 50)
+                 or (k == "lint_command" and (v is None or (isinstance(v, str) and len(v) <= 500)))}
+        stored = sm.get_profile(workspace_id)
+        apply_overrides(ProjectProfile(**stored["detected"]), clean)   # validates the merge
+        sm.save_profile(workspace_id, stored["detected"], overrides=clean)
+        return await asyncio.to_thread(profile_view, workspace_id, ws)
+
+    @app.get("/workspaces/{workspace_id}/commands", dependencies=[Depends(auth)])
+    async def get_commands(workspace_id: str):
+        workspace_of(workspace_id)
+        return {"granted": sm.list_commands(workspace_id), "approvable": nexura_config.EXTRA_COMMAND_CANDIDATES}
+
+    @app.post("/workspaces/{workspace_id}/commands", dependencies=[Depends(auth)])
+    async def grant_command(workspace_id: str, req: CommandReq):
+        """The user's one-time approval of a specific executable for THIS workspace (only names from the fixed candidate list)."""
+        workspace_of(workspace_id)
+        if not valid_extra_names([req.exe]):
+            raise HTTPException(status_code=422, detail=f"Only these can be approved: {', '.join(nexura_config.EXTRA_COMMAND_CANDIDATES)}.")
+        sm.grant_command(workspace_id, req.exe.strip().lower())
+        return {"granted": sm.list_commands(workspace_id)}
+
+    @app.delete("/workspaces/{workspace_id}/commands/{exe}", dependencies=[Depends(auth)])
+    async def revoke_command(workspace_id: str, exe: str):
+        workspace_of(workspace_id)
+        sm.revoke_command(workspace_id, exe.strip().lower())
+        return {"granted": sm.list_commands(workspace_id)}
+
+    @app.get("/workspaces/{workspace_id}/summary", dependencies=[Depends(auth)])
+    async def get_summary(workspace_id: str):
+        workspace_of(workspace_id)
+        row = sm.get_repo_summary(workspace_id)
+        return {"summary": row["summary"] if row else None, "version": row["version"] if row else None}
+
+    @app.post("/workspaces/{workspace_id}/summary", dependencies=[Depends(auth)])
+    async def make_summary(workspace_id: str):
+        """(Re)generate the project summary with the planner's model; cached by source hash, so an unchanged project costs nothing."""
+        from agents.planner import PlannerAgent
+        from core.context_builder import _list_files
+        from core.planner_context import effective_profile, get_summary
+        from core.safety import load_ignore_patterns
+        ws = workspace_of(workspace_id)
+
+        def work():
+            ctx = summary_ctx(workspace_id, ws)
+            patterns = load_ignore_patterns(Path(ws["path"]))
+            return get_summary(ctx, effective_profile(ctx), _list_files(Path(ws["path"]), patterns), patterns, PlannerAgent().call_text)
+        try:
+            text = await asyncio.to_thread(work)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail={"code": "SUMMARY_UNAVAILABLE", "message": str(e)[:300]})
+        if not text:
+            raise HTTPException(status_code=503, detail={"code": "SUMMARY_UNAVAILABLE", "message": "The model could not write a summary."})
+        return {"summary": text, "version": sm.get_repo_summary(workspace_id)["version"]}
+
     @app.post("/runs", dependencies=[Depends(auth)])
     async def create_run(req: RunReq):
         ws = workspace_of(req.workspace_id)
+        baseline_cmd = None
+        if req.baseline:   # the user said yes to running the project's tests before/after this run
+            try:
+                from core.planner_context import effective_profile
+                sub = detect_profile(ws["path"], req.subproject) if req.subproject else None
+            except SafetyError as e:
+                raise HTTPException(status_code=422, detail=e.message)
+            prof = sub or effective_profile(summary_ctx(req.workspace_id, ws))
+            baseline_cmd = (prof.test_commands or [""])[0]    # "" = asked for, but nothing to run
         ctx, state = await asyncio.to_thread(start_errors, lambda: runner.start_run(
             sm, req.workspace_id, ws["path"], req.prompt, approval_level=req.approval_level, git_init=req.git_init,
-            dirty_policy=req.dirty_policy, dirty_files=req.dirty_files, trusted=ws["trusted"]))
+            dirty_policy=req.dirty_policy, dirty_files=req.dirty_files, trusted=ws["trusted"], baseline_command=baseline_cmd))
         if index["manager"] is not None:   # keep the index fresh while the run edits files
             ctx.indexer = index["manager"].existing(req.workspace_id)
         manager.start(ctx, state)
@@ -263,7 +380,7 @@ def create_app(token: str | None = None, sm: StateManager | None = None, checkpo
 
     @app.post("/runs/{run_id}/approve", dependencies=[Depends(auth)])
     async def approve(run_id: str, req: ApproveReq):
-        return respond(run_id, "approval", {"decision": req.decision, "note": req.note or ""})
+        return respond(run_id, "approval", {"decision": req.decision, "note": req.note or "", "rejected_files": req.rejected_files})
 
     @app.post("/runs/{run_id}/cancel", dependencies=[Depends(auth)])
     async def cancel(run_id: str):

@@ -114,6 +114,8 @@ def main():
     parser.add_argument("--undo", metavar="RUN_ID", help="Undo a run's changes (all of them, or one task with --task)")
     parser.add_argument("--task", type=int, help="With --undo: only this task")
     parser.add_argument("--confirm", action="store_true", help="With --undo: overwrite files you edited since the run")
+    parser.add_argument("--baseline", action="store_true",
+                        help="Run the project's own test command before and after the run and report new failures (regressions)")
     parser.add_argument("--metrics", metavar="RUN_ID", help="Print metrics for a run and exit")
 
     args = parser.parse_args()
@@ -152,6 +154,9 @@ def main():
         print(f"Cannot start: {e.message}" + ("\nRe-run with --git-init to create a repository here." if e.code == "NOT_A_REPO" else ""))
         sys.exit(2)
 
+    if args.baseline and not args.resume:   # passing the flag is the approval to run the project's tests
+        from core.planner_context import effective_profile
+        project.baseline_command = (effective_profile(project).test_commands or [""])[0]
     if nexura_config.INDEXING_ENABLED:
         project.indexer = start_index(project.root)
 

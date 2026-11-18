@@ -23,6 +23,32 @@ class PlanError(RuntimeError):
     """The planner could not produce a valid plan."""
 
 
+EXISTING_SECTION = """
+========================
+EXISTING PROJECT (this is NOT a new project: change what is there)
+========================
+The workspace already contains code. Plan CHANGES to it:
+- PREFER EDITING existing files over creating new ones. For every step, list in "files" the EXISTING files (paths from the file
+  list below, exactly as written) the step edits, and in "new_files" the new files it creates. Never put an existing path in
+  "new_files" or a path that is not in the list in "files".
+- Name the specific files and functions/classes in each step's description.
+- Derive acceptance checks from the project itself: use the project's own test command (below) as a command_ok check, and its
+  run command for http_status checks. Do not invent commands the project does not have.
+- Keep every existing behaviour working; do not rewrite or reformat code that the request does not touch.
+{extra_commands}
+PROJECT SUMMARY:
+{summary}
+
+PROJECT PROFILE (detected; may be edited by the user):
+{profile}
+
+FILES ({shown} of {total} shown):
+{files}
+
+CODE RELEVANT TO THE REQUEST (retrieved, reference only):
+{hits}
+"""
+
 PROMPT_TEMPLATE = """You are a senior software architect designing execution plans for an autonomous AI system.
 
 Your task is to convert a user request into a STRICT, structured execution plan.
@@ -159,6 +185,14 @@ class PlannerAgent:
         )
         return response.text.strip()
 
+    def call_text(self, prompt: str) -> str:
+        """Plain-text completion with the planner's model (used for the repo summary)."""
+        if not self.client:
+            raise ValueError("GenAI Client is not initialized.")
+        response = self.client.models.generate_content(
+            model=self.model_name, contents=prompt, config=types.GenerateContentConfig(temperature=config.TEMPERATURE))
+        return (response.text or "").strip()
+
     def _call_with_retry(self, prompt: str) -> str:
         """Transient API errors (rate limit, 5xx 'high demand', timeouts) are retried with backoff; others fail at once."""
         for attempt in range(config.MAX_RETRIES):
@@ -176,13 +210,32 @@ class PlannerAgent:
                 time.sleep(wait)
         raise AssertionError("unreachable")
 
-    def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None) -> ExecutionPlan:
+    @staticmethod
+    def existing_section(context: dict) -> str:
+        import json
+        nl = chr(10)
+        extra = context.get("extra_commands") or []
+        hits = nl.join(f"--- {h['path']} lines {h['lines']}" + (f" ({h['symbol']})" if h.get("symbol") else "") + nl + h["snippet"]
+                       for h in context.get("hits", [])) or "(none)"
+        note = f"- Besides the usual commands, these programs are approved for checks in this workspace: {', '.join(extra)}." + nl if extra else ""
+        return EXISTING_SECTION.format(
+            extra_commands=note, summary=context.get("summary") or "(unavailable)",
+            profile=json.dumps(context.get("profile") or {}, indent=1),
+            shown=len(context.get("files", [])), total=context.get("files_total", 0),
+            files=nl.join(context.get("files", [])), hits=hits)
+
+    def plan(self, user_prompt: str, project_path: str, feedback: str = None, previous_plan: dict = None,
+             context: dict = None) -> ExecutionPlan:
         """Generate a validated plan. Retries up to PLAN_ATTEMPTS-1 times, feeding the error back. Raises PlanError."""
         if not self.client:
             raise PlanError("GenAI client not configured (missing GOOGLE_API_KEY).")
 
         print(f"[Planner] role=planner prompt_version={self.prompt_version} model={self.model_name}")
         prompt = self.prompt.format(user_prompt=user_prompt)
+        extra_commands = tuple((context or {}).get("extra_commands") or ())
+        exists = (context or {}).get("exists")
+        if context:
+            prompt += self.existing_section(context)
         if feedback and previous_plan:
             import json
             prompt += f"""
@@ -216,7 +269,7 @@ output_contains(command, text), http_status(url, and usually start_command). Ret
             try:
                 raw = last_raw = self._call_with_retry(attempt_prompt)
                 plan_obj = ExecutionPlan.model_validate_json(strip_fences(raw))
-                problems = validate_plan(plan_obj)
+                problems = validate_plan(plan_obj, extra_commands, exists)
                 if problems:
                     raise ValueError("; ".join(problems))
             except (ValidationError, ValueError) as e:
@@ -231,14 +284,14 @@ output_contains(command, text), http_status(url, and usually start_command). Ret
             print(f"Plan (Markdown) saved to: {md_path}")
             return plan_obj
 
-        repaired = self._repair(last_raw)
+        repaired = self._repair(last_raw, extra_commands)
         if repaired is not None:
             md_path, json_path = self.save_plan(repaired, project_path)
             print(f"Plan (JSON) saved to: {json_path}")
             return repaired
         raise PlanError(f"Planner produced no valid plan after {PLAN_ATTEMPTS} attempts: {last_error[:300]}")
 
-    def _repair(self, raw: str) -> ExecutionPlan | None:
+    def _repair(self, raw: str, extra_commands=()) -> ExecutionPlan | None:
         """Last resort after the retries: drop ONLY the acceptance checks that are malformed or can never run, keep the rest of the
         plan, and say so (plan.warnings). A step left with no checks falls back to default verification (syntax of changed files
         + every command it ran must exit 0), which is weaker but honest. Returns None if the plan is broken in any other way."""
@@ -252,7 +305,7 @@ output_contains(command, text), http_status(url, and usually start_command). Ret
                     try:
                         acc = Acceptance.model_validate(entry)
                         probe = Step(step_id=1, title="t", description="d", acceptance=[acc])
-                        problems = validate_plan(ExecutionPlan(project_id="p", goal="g", steps=[probe]))
+                        problems = validate_plan(ExecutionPlan(project_id="p", goal="g", steps=[probe]), extra_commands)
                         problems = [p for p in problems if "no acceptance" not in p]
                     except Exception as e:
                         problems = [str(e).splitlines()[-1] if str(e) else "invalid"]
@@ -265,7 +318,7 @@ output_contains(command, text), http_status(url, and usually start_command). Ret
                     step["documentation_only"] = True   # no usable check: default verification applies; flagged below
                     warnings.append(f"step {step.get('step_id')}: no usable acceptance check; default verification only")
             plan = ExecutionPlan.model_validate(data)
-            if validate_plan(plan) or not warnings:
+            if validate_plan(plan, extra_commands) or not warnings:
                 return None
             self.last_warnings = warnings
             for w in warnings:

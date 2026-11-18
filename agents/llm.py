@@ -10,7 +10,7 @@ import config
 from core import execution_manager as em
 
 _override: Any = None  # tests inject a fake chat model here
-_cache: dict[str, Any] = {}
+_cache: dict[tuple, Any] = {}
 
 
 def set_llm(llm: Any) -> None:
@@ -38,9 +38,10 @@ def llm_with_tools(role: str):
     if _override is not None:
         return _override
     name = model_for(role)
-    if name not in _cache:
-        _cache[name] = get_llm(name).bind_tools(em.TOOL_SCHEMAS)
-    return _cache[name]
+    key = (name, config.PATCH_MODE)
+    if key not in _cache:
+        _cache[key] = get_llm(name).bind_tools(em.tool_schemas())
+    return _cache[key]
 
 
 def _short(text: Any, n: int = 200) -> str:

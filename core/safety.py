@@ -132,8 +132,39 @@ def _is_install(name: str, args: list[str]) -> bool:
     return False
 
 
-def parse_command(command: str, root: Path | str, allow_install: bool = False) -> ParsedCommand:
-    """Validate a command against the allowlist. The caller must run it with shell=False."""
+# Executables a user may approve per workspace can still not install/publish/fetch-and-run, and the runners must only run
+# allowlisted programs (so `poetry run bash` is as impossible as `bash`).
+EXTRA_BLOCKED_VERBS = {"install", "add", "i", "remove", "rm", "update", "upgrade", "up", "publish", "dlx", "exec", "x", "create",
+                       "link", "global", "config", "set", "patch", "self", "pip", "init", "new", "sync", "lock", "tool", "python"}
+RUNNERS = {"poetry": "run", "uv": "run", "pipenv": "run"}
+RUNNER_TOOLS = {"ruff", "flake8", "mypy", "black"}
+
+
+def _check_extra(name: str, args: list[str], extra: set[str]) -> None:
+    pos = [a for a in args if not a.startswith("-")]
+    verb = pos[0].lower() if pos else ""
+    if name not in ("make", "tox") and verb in EXTRA_BLOCKED_VERBS:
+        raise SafetyError("USE_INSTALL_DEPENDENCY" if verb in ("install", "add", "i", "update", "upgrade", "up", "sync") else "NOT_ALLOWED",
+                          f"'{name} {verb}' is not allowed (workspace-approved executables may only run tests, scripts and linters).")
+    if name in RUNNERS and verb == RUNNERS[name]:
+        rest = args[args.index(pos[0]) + 1:]
+        inner = next((rest[i:] for i, a in enumerate(rest) if not a.startswith("-")), [])
+        iname = (inner[0].lower() if inner else "")
+        for ext in (".exe", ".cmd", ".bat"):
+            iname = iname.removesuffix(ext)
+        if iname not in (set(config.ALLOWED_COMMANDS) | RUNNER_TOOLS):
+            raise SafetyError("NOT_ALLOWED", f"'{name} run {iname or ''}' is not allowed: only default-allowlisted programs or linters can run through it.")
+        if _is_install({"python3": "python", "pip3": "pip"}.get(iname, iname), inner[1:]):
+            raise SafetyError("USE_INSTALL_DEPENDENCY", "Install packages with the install_dependency tool.")
+
+
+def valid_extra_names(names) -> list[str]:
+    """Only plain, known executable names survive (no paths, no operators, nothing outside EXTRA_COMMAND_CANDIDATES)."""
+    return [n for n in dict.fromkeys(str(n).strip().lower() for n in names or []) if n in config.EXTRA_COMMAND_CANDIDATES]
+
+
+def parse_command(command: str, root: Path | str, allow_install: bool = False, extra_allowed=()) -> ParsedCommand:
+    """Validate a command against the allowlist (plus the workspace's user-approved extras). The caller must run it with shell=False."""
     if not command or not command.strip():
         raise SafetyError("EMPTY_COMMAND", "Empty command.")
     outside = _outside_quotes(command)
@@ -152,8 +183,12 @@ def parse_command(command: str, root: Path | str, allow_install: bool = False) -
     for ext in (".exe", ".cmd", ".bat"):
         if name.endswith(ext):
             name = name[: -len(ext)]
-    if name not in config.ALLOWED_COMMANDS:
-        raise SafetyError("NOT_ALLOWED", f"'{exe}' is not an allowed command. Allowed: {', '.join(config.ALLOWED_COMMANDS)}")
+    extra = set(valid_extra_names(extra_allowed))
+    if name not in config.ALLOWED_COMMANDS and name not in extra:
+        hint = f" (can be approved for this workspace: {name})" if name in config.EXTRA_COMMAND_CANDIDATES else ""
+        raise SafetyError("NOT_ALLOWED", f"'{exe}' is not an allowed command{hint}. Allowed: {', '.join(config.ALLOWED_COMMANDS + sorted(extra))}")
+    if name in extra and name not in config.ALLOWED_COMMANDS:
+        _check_extra(name, args, extra)
     name = {"python3": "python", "pip3": "pip"}.get(name, name)
 
     installs = _is_install(name, args)

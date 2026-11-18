@@ -9,7 +9,7 @@ from pathlib import Path
 
 def load(path: str) -> dict:
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    d["label"] = f"{d.get('retrieval_mode', '?')} ({Path(path).stem})"
+    d["label"] = f"retrieval {d.get('retrieval_mode', '?')}, patch {d.get('patch_mode', 'v1')} ({Path(path).stem})"
     return d
 
 
@@ -30,6 +30,8 @@ def table(docs: list[dict]) -> str:
         ("tool calls (total)", lambda d: str(d["summary"].get("tool_calls", "-"))),
         ("regressions introduced", lambda d: str(d["summary"].get("regressions", "-"))),
         ("time (s)", lambda d: str(d["summary"].get("time_s", "-"))),
+        ("retrieval fallbacks", lambda d: str(d["summary"].get("retrieval_fallbacks", "-"))),
+        ("index build time per run (s)", lambda d: mean(d["summary"].get("index_s"))),
         ("skipped tasks", lambda d: ", ".join(d["summary"].get("skipped") or []) or "-"),
     ]
     lines += [f"| {name} | " + " | ".join(f(d) for d in docs) + " |" for name, f in rows]

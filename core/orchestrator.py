@@ -19,6 +19,7 @@ from agents import coder, debugger
 from core import execution_manager as em
 from core import approvals, checkpoints, retry_manager, validator, verification
 from core.context_builder import build_task_context
+from core.planner_context import build_planner_context
 from core.safety import SafetyError, redact_secrets, resolve_in_root
 from core.schemas import Action
 from core.state import NexuraState
@@ -72,6 +73,37 @@ def _llm_logger(ctx, task_id):
     return log
 
 
+def _ensure_baseline(ctx) -> None:
+    """V2-5.3: once per run (after plan approval, before the first task), run the approved test command and store the results."""
+    if ctx.baseline_command is None or ctx.baseline is not None:
+        return
+    if not ctx.baseline_command:    # the user asked for a baseline but the project has no test command
+        ctx.baseline = {"ran": False, "reason": "no test command found for this project (set one in the project profile)"}
+        ctx.emit("baseline_skipped", reason=ctx.baseline["reason"])
+        return
+    from core import baseline
+    ctx.emit("baseline_started", command=ctx.baseline_command)
+    res = baseline.run_tests(ctx, ctx.baseline_command)
+    ctx.baseline = res
+    if ctx.state_manager is not None:
+        ctx.state_manager.save_baseline(ctx.run_id, res)
+    ctx.emit("baseline_recorded" if res.get("ran") else "baseline_skipped", **{k: v for k, v in res.items() if k != "output"})
+
+
+def _regression_check(ctx, status: str) -> tuple[str, str | None]:
+    """V2-5.8: after the last task, re-run the tests. A NEW failure makes the run completed_with_failures (the user can undo);
+    failures that were already there are not blamed on the agent."""
+    if not ctx.baseline_command or not ctx.baseline or not ctx.baseline.get("ran") or status in ("failed", "cancelled"):
+        return status, None
+    from core import baseline
+    after = baseline.run_tests(ctx, ctx.baseline_command)
+    verdict = baseline.compare(ctx.baseline, after)
+    ctx.emit("regression_detected" if verdict["regressed"] else "regression_check", **verdict)
+    if verdict["regressed"]:
+        return "completed_with_failures", verdict["message"] + " Use undo to restore the files from before the run."
+    return status, None
+
+
 def _finish_run(ctx, status: str, error: str | None = None) -> None:
     if ctx.state_manager is not None:
         ctx.state_manager.update_run(ctx.run_id, status, error)
@@ -92,8 +124,9 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
 
     try:
         planner = PlannerAgent()
+        pctx = build_planner_context(ctx, state["user_prompt"], planner.call_text)   # None unless RETRIEVAL_MODE=v2 on an existing project
         plan = planner.plan(user_prompt=state["user_prompt"], project_path=str(plan_dir),
-                                   feedback=feedback, previous_plan=previous_plan)
+                                   feedback=feedback, previous_plan=previous_plan, context=pctx)
     except PlanError as e:
         print(f"[Planner] FAILED: {e}")
         _finish_run(ctx, "failed", f"Planner failed: {e}")
@@ -160,6 +193,7 @@ def task_picker_node(state: NexuraState, config: RunnableConfig) -> dict:
         return {}  # nothing left: routes to END
     task = tasks[idx]
     ctx = _ctx(config)
+    _ensure_baseline(ctx)   # once per run, after the plan is approved and before the first edit
     ctx.reset_task()
     if ctx.state_manager is not None:
         ctx.state_manager.mark_task(ctx.run_id, task["step_id"], "running")
@@ -346,6 +380,16 @@ def approval_node(state: NexuraState, config: RunnableConfig) -> Command:
     })
     approved, note = approvals.parse_decision(decision)
     ctx.emit("approval_decision", task["step_id"], approved=approved, note=note, reasons=reasons)
+    rejected_files = {str(f).replace("\\", "/") for f in (decision.get("rejected_files") or [])} if isinstance(decision, dict) else set()
+    if approved and rejected_files:   # per-file review: calls that touch a rejected file are dropped, the rest run
+        keep = [p for p in pending if not ({d["file"] for d in p.get("preview", [])} & rejected_files)]
+        dropped = [p for p in pending if p not in keep]
+        if keep:
+            return Command(goto="execute", update={
+                "pending": [{**p, "approved_by": "user"} for p in keep],
+                "messages": [_tool_msg(f"REJECTED by user: changes to {', '.join(sorted(rejected_files))} were not approved.", p, True) for p in dropped],
+                "execution_history": state["execution_history"] + [_hist(task, p["name"], p["args"], "rejected by user (file)", "rejected") for p in dropped]})
+        approved, note = False, note or f"changes to {', '.join(sorted(rejected_files))} were rejected"
     if approved:
         return Command(goto="execute", update={"pending": [{**p, "approved_by": "user"} for p in pending]})
 
@@ -511,7 +555,10 @@ def advance_task_node(state: NexuraState, config: RunnableConfig) -> dict:
     }
     if nxt is None:
         update["run_status"] = final_run_status(status)
-        _finish_run(ctx, update["run_status"])
+        update["run_status"], note = _regression_check(ctx, update["run_status"])
+        if note:
+            update["run_error"] = note
+        _finish_run(ctx, update["run_status"], note)
     _write_plan_md(ctx, {**state, **update})
     return update
 

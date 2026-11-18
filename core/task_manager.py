@@ -7,7 +7,7 @@ PLAN_TIME_CODES = {"SHELL_OPERATOR", "NOT_ALLOWED", "USE_INSTALL_DEPENDENCY", "B
                    "NOT_AN_INSTALL", "OUTSIDE_ROOT"}
 
 
-def _bad_commands(step) -> list[str]:
+def _bad_commands(step, extra=()) -> list[str]:
     """Acceptance commands the validator would always reject (e.g. `pip install ...`), so the check could never pass."""
     from core.safety import SafetyError, parse_command
     out = []
@@ -16,7 +16,7 @@ def _bad_commands(step) -> list[str]:
             if not cmd:
                 continue
             try:
-                parse_command(cmd, ".")
+                parse_command(cmd, ".", extra_allowed=extra)
             except SafetyError as e:
                 if e.code in PLAN_TIME_CODES:
                     out.append(f"step {step.step_id}: acceptance command `{cmd}` is not allowed ({e.code}: {e.message}); "
@@ -24,8 +24,22 @@ def _bad_commands(step) -> list[str]:
     return out
 
 
-def validate_plan(plan) -> list[str]:
-    """Return a list of problems with an ExecutionPlan (empty list = valid)."""
+def _bad_paths(step, exists) -> list[str]:
+    """V2: an existing project's plan must name real files in `files` and must not claim an existing file is new."""
+    out = []
+    for f in step.files:
+        if not exists(f):
+            out.append(f"step {step.step_id}: `{f}` is listed in files (existing files to edit) but does not exist; "
+                       "use a path from the project listing, or put it in new_files")
+    for f in step.new_files:
+        if exists(f):
+            out.append(f"step {step.step_id}: `{f}` is listed as new but already exists; put it in files and edit it instead")
+    return out
+
+
+def validate_plan(plan, extra_commands=(), path_exists=None) -> list[str]:
+    """Return a list of problems with an ExecutionPlan (empty list = valid). `path_exists(rel) -> bool` enables the
+    existing-project path check (V2)."""
     errs: list[str] = []
     steps = plan.steps
     if not steps:
@@ -41,7 +55,9 @@ def validate_plan(plan) -> list[str]:
                 errs.append(f"step {s.step_id} depends on step {d}, which is not earlier")
         if not s.acceptance and not s.documentation_only:
             errs.append(f"step {s.step_id} has no acceptance checks (set documentation_only only for pure docs)")
-        errs += _bad_commands(s)
+        errs += _bad_commands(s, extra_commands)
+        if path_exists is not None:
+            errs += _bad_paths(s, path_exists)
     return errs
 
 

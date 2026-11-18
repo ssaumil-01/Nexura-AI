@@ -35,6 +35,9 @@ class ProjectContext(BaseModel):
     trusted: bool = True           # False (untrusted VS Code workspace): every mutating action is rejected
     dirty_files: set[str] = Field(default_factory=set)   # files with unsaved/uncommitted user changes: never touched
     git_checkpoints: bool = False  # take a git checkpoint before each task (set by the runner)
+    extra_commands: list[str] = Field(default_factory=list)   # executables the user approved for THIS workspace (V2-5.2)
+    baseline: Optional[dict] = Field(default=None, exclude=True)   # test results before the run (V2-5.3)
+    baseline_command: Optional[str] = None   # the test command the user approved running before/after the run (None = no baseline, '' = asked for but none found)
 
     # persistence (all optional so tools/tests work without them)
     project_id: Optional[str] = None
@@ -130,6 +133,8 @@ class Step(BaseModel):
     dependencies: list[int] = Field(description="step_ids of EARLIER steps this step depends on", default_factory=list)
     acceptance: list[Acceptance] = Field(description="Checks that prove this step is done", default_factory=list)
     documentation_only: bool = Field(description="True only if the step writes docs and nothing can be verified", default=False)
+    files: list[str] = Field(description="Existing project files this step edits (workspace-relative paths); only for existing projects", default_factory=list)
+    new_files: list[str] = Field(description="New files this step creates (workspace-relative paths); only for existing projects", default_factory=list)
 
 
 class ExecutionPlan(BaseModel):

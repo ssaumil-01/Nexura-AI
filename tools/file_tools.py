@@ -3,6 +3,8 @@ import os
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+import config
+from core import patching
 from core.safety import SafetyError, check_writable, resolve_in_root
 from core.schemas import ProjectContext
 from tools._ctx import err, get_project
@@ -57,7 +59,22 @@ def _write(ctx, target, content):
     return f"Successfully updated file: {target}"
 
 
+def _patch_hunks(ctx, target, hunks):
+    """V2 patching: unique matches, original line endings/BOM/encoding kept, all hunks or none."""
+    full, key = _target(ctx, target, True)
+    if not os.path.isfile(full):
+        raise SafetyError("FILE_NOT_FOUND", f"File not found: {target}")
+    if key not in ctx.files_read:
+        raise SafetyError("READ_REQUIRED", f"Read {target} with read_file before modifying it.")
+    with open(full, "rb") as f:
+        data = patching.patch_bytes(f.read(), hunks, ctx.limits.max_file_bytes)
+    patching.write_atomic(full, data)
+    return f"Successfully patched {target} ({len(hunks)} hunk(s) applied)."
+
+
 def _patch(ctx, target, search_text, replace_text):
+    if config.PATCH_MODE == "v2":
+        return _patch_hunks(ctx, target, [{"search_text": search_text, "replace_text": replace_text}])
     full, key = _target(ctx, target, True)
     if not os.path.isfile(full):
         raise SafetyError("FILE_NOT_FOUND", f"File not found: {target}")
@@ -120,6 +137,15 @@ def patch_file(target_file: str, search_text: str, replace_text: str, config: Ru
     Much more efficient than rewriting the entire file for small changes.
     The search_text must be an exact match of existing content. You must read_file it first in this task."""
     return _as_str(_patch, get_project(config), target_file, search_text, replace_text)
+
+
+@tool
+def apply_patch(target_file: str, hunks: list[dict], config: RunnableConfig) -> str:
+    """Edits an EXISTING file with one or more hunks, applied all together or not at all. Each hunk is
+    {"search_text": "...", "replace_text": "..."}. Every search_text must match EXACTLY ONE place in the file (include enough
+    surrounding lines); trailing whitespace and line endings are matched loosely and the file's own line endings are kept.
+    You must read_file it first in this task."""
+    return _as_str(_patch_hunks, get_project(config), target_file, hunks)
 
 
 @tool

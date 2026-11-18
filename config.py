@@ -63,8 +63,10 @@ LLM_TIMEOUT_S = int(os.getenv("NEXURA_LLM_TIMEOUT_S", "120"))   # per model requ
 
 # --- Safety ------------------------------------------------
 ALLOWED_COMMANDS = ["python", "python3", "py", "pip", "pip3", "node", "npm", "npx", "uvicorn", "pytest", "streamlit", "flask"]
+# V2: executables a user may approve PER WORKSPACE (never loosens the default list; see core.safety.parse_command)
+EXTRA_COMMAND_CANDIDATES = ["poetry", "yarn", "pnpm", "make", "uv", "tox", "pipenv"]
 ALLOWED_ACTIONS = [
-    "create_file", "write_file", "patch_file", "read_file", "batch_file_operations",
+    "create_file", "write_file", "patch_file", "apply_patch", "read_file", "batch_file_operations",
     "delete_file", "rename_file",
     "create_directory", "list_directory", "run_command", "install_dependency",
     "start_process", "read_process_output", "stop_process",
@@ -83,7 +85,7 @@ except ValueError:
 APPROVAL_LEVEL = os.getenv("NEXURA_APPROVAL_LEVEL", "ask_risky")  # ask_every_edit | ask_risky | auto_within_limits
 
 # --- Prompts / environment hints ---------------------------
-PROMPT_VERSIONS = {"planner": "5", "coder": "2", "debugger": "1"}
+PROMPT_VERSIONS = {"planner": "6", "coder": "2", "debugger": "1"}
 SHELL_HINT = os.getenv("NEXURA_SHELL_HINT", "Windows PowerShell" if os.name == "nt" else "POSIX sh")
 
 
@@ -124,6 +126,8 @@ CHECKPOINT_DB_PATH = DATA_DIR / "checkpoints.db"  # LangGraph checkpoints
 RETRIEVAL_MODE = env_choice("NEXURA_RETRIEVAL_MODE", "v1", ("v1", "v2"))   # v1 = V1 context builder, v2 = retrieval
 INDEXING_ENABLED = env_bool("NEXURA_INDEXING_ENABLED", False)
 PATCH_MODE = env_choice("NEXURA_PATCH_MODE", "v1", ("v1", "v2"))
+if PATCH_MODE == "v2":
+    PROMPT_VERSIONS.update(coder="3", debugger="2")   # the coder/debugger prompts prefer apply_patch in v2
 EMBEDDING_MODEL = os.getenv("NEXURA_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")   # local only; downloaded after consent
 CHUNK_MAX_TOKENS = env_int("NEXURA_CHUNK_MAX_TOKENS", 400)
 CHUNK_MAX_LINES = env_int("NEXURA_CHUNK_MAX_LINES", 80)
