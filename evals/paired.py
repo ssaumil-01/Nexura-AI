@@ -46,7 +46,7 @@ def merge(docs: list[dict], arm: str, args) -> dict:
     ran = [r for r in results if not r.get("skipped")]
     passed = sum(1 for r in ran if r["passed"])
     first = docs[0]
-    summary = {"tasks": len({r["id"] for r in ran}), "runs": len(ran), "repeat": args.repeat, "passed": passed,
+    summary = {"tasks": len({r["id"] for r in ran}), "runs": len(ran), "repeat": max((r["repeat"] for r in ran), default=0), "passed": passed,
                "pass_rate": round(passed / len(ran), 3) if ran else 0.0, "skipped": sorted({r["id"] for r in results if r.get("skipped")}),
                "retries": sum(r.get("retries") or 0 for r in ran), "tool_calls": sum(r.get("tool_calls") or 0 for r in ran),
                "approvals": sum(r.get("approvals") or 0 for r in ran), "time_s": round(sum(r["time_s"] for r in ran), 1),
@@ -79,6 +79,14 @@ def main() -> int:
         tasks = [t for t in tasks if t in set(args.only.split(","))]
     tmp = Path(tempfile.mkdtemp(prefix="nexura-paired-"))
     docs: dict[str, list[dict]] = {a: [] for a in arms}
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = f"{datetime.now():%Y-%m-%d_%H%M%S}"
+
+    def save() -> None:       # after every run, so an interrupted eval still leaves its results
+        for a in arms:
+            if docs[a]:
+                (out / f"{stamp}_{a.replace('/', '-')}.json").write_text(json.dumps(merge(docs[a], a, args), indent=2), encoding="utf-8")
     stop = False
     for k in range(1, args.repeat + 1):
         for t in tasks:
@@ -88,6 +96,7 @@ def main() -> int:
                 if d is None:
                     continue
                 docs[a].append(d)
+                save()
                 r = d["results"][0]
                 print(f"   {'PASS' if r['passed'] else 'FAIL'} {r.get('run_status')} {r['time_s']}s tokens={r.get('tokens')} reg={r.get('regressions')}", flush=True)
                 if "LLM_QUOTA" in json.dumps(r.get("task_errors") or {}) + str(r.get("run_error")):
@@ -98,14 +107,10 @@ def main() -> int:
                 break
         if stop:
             break
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    stamp = f"{datetime.now():%Y-%m-%d_%H%M%S}"
+    save()
     for a in arms:
         if docs[a]:
-            path = out / f"{stamp}_{a.replace('/', '-')}.json"
-            path.write_text(json.dumps(merge(docs[a], a, args), indent=2), encoding="utf-8")
-            print("wrote", path)
+            print("wrote", out / f"{stamp}_{a.replace('/', '-')}.json")
     return 0
 
 
