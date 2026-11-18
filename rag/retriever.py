@@ -12,6 +12,7 @@ IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 NAMED_WEIGHT = 0.5     # boosts, in units of "rank 1 in one list" (1 / (RRF_K + 1))
 RECENT_WEIGHT = 0.25
 EXACT_WEIGHT = 1.0
+MAX_PER_FILE = 1       # at most this many chunks of one file in the results (0 = no cap). Chosen on the tuning half of the retrieval labels: more distinct files, no loss of labelled symbols (docs/V2_EVAL.md)
 
 
 @dataclass
@@ -107,6 +108,8 @@ class Retriever:
             c = chunks[cid]
             if any(o.chunk.path == c.path and not (o.chunk.end_line < c.start_line or c.end_line < o.chunk.start_line) for o in out):
                 continue   # overlaps a better-ranked chunk of the same file (split windows)
+            if MAX_PER_FILE and sum(o.chunk.path == c.path for o in out) >= MAX_PER_FILE:
+                continue
             out.append(RetrievedChunk(c, round(scores[cid], 6), sources[cid], "; ".join(dict.fromkeys(why[cid]))))
             if len(out) >= k:
                 break
