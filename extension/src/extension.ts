@@ -2,12 +2,14 @@ import * as vscode from "vscode";
 import { BackendManager, SECRET_GEMINI, SECRET_GROQ } from "./backend";
 import { RunController } from "./controller";
 import { DIFF_SCHEME, DiffProvider } from "./diff";
+import { ProjectManager } from "./project";
 import type { WebviewMessage } from "./protocol";
 import { SidebarProvider } from "./sidebar";
 
 /** Returned from activate() so the end-to-end test can drive the extension without UI prompts. */
 export interface NexuraApi {
   controller: RunController;
+  project: ProjectManager;
   backend: BackendManager;
   waitReady(): Promise<void>;
 }
@@ -26,6 +28,9 @@ export function activate(context: vscode.ExtensionContext): NexuraApi {
   const backend = new BackendManager(context, out);
   const diffs = new DiffProvider();
   const controller = new RunController(context, backend, out, diffs);
+  const project = new ProjectManager(context, backend, out, () => controller.isActive());
+  controller.project = project;
+  project.onDidChange(() => controller.refresh());
 
   const handle = async (m: WebviewMessage): Promise<void> => {
     switch (m.type) {
@@ -34,7 +39,11 @@ export function activate(context: vscode.ExtensionContext): NexuraApi {
       case "resume": await controller.resume(); break;
       case "undo": await controller.undo(m.scope); break;
       case "planDecision": await controller.decidePlan(m.decision, m.text); break;
-      case "approve": await controller.approve(m.decision, m.note); break;
+      case "approve": await controller.approve(m.decision, m.note, m.rejectedFiles); break;
+      case "rebuildIndex": await project.startIndex(true); break;
+      case "showSummary": await project.showSummary(); break;
+      case "editProfile": await project.editProfile(); break;
+      case "enableIndexing": await project.enableIndexing(); break;
       case "openDiff": await controller.openDiff(m.file); break;
       case "openPlan": await controller.openPlan(); break;
       case "setKey": await setKey(context, backend, controller, m.provider === "gemini" ? SECRET_GEMINI : SECRET_GROQ, m.provider === "gemini" ? "Gemini" : "Groq"); break;
@@ -45,7 +54,7 @@ export function activate(context: vscode.ExtensionContext): NexuraApi {
 
   const sidebar = new SidebarProvider(context.extensionUri, controller, handle);
   context.subscriptions.push(
-    out, backend, controller, controller.status,
+    out, backend, controller, controller.status, project,
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, diffs),
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebar),
     vscode.commands.registerCommand("nexura.startRun", async (prompt?: string) => {
@@ -63,10 +72,14 @@ export function activate(context: vscode.ExtensionContext): NexuraApi {
     vscode.commands.registerCommand("nexura.showLogs", () => out.show(true)),
     vscode.commands.registerCommand("nexura.restartBackend", () => backend.restart()),
     vscode.commands.registerCommand("nexura.debugRetrieval", () => controller.debugRetrieval()),
+    vscode.commands.registerCommand("nexura.rebuildIndex", () => project.startIndex(true)),
+    vscode.commands.registerCommand("nexura.enableIndexing", () => project.enableIndexing()),
+    vscode.commands.registerCommand("nexura.showProjectSummary", () => project.showSummary()),
+    vscode.commands.registerCommand("nexura.editProjectProfile", () => project.editProfile()),
   );
 
   const started = backend.start().catch((e) => out.appendLine(`[backend] failed to start: ${e instanceof Error ? e.message : e}`));
-  return { controller, backend, waitReady: () => started };
+  return { controller, project, backend, waitReady: () => started };
 }
 
 export function deactivate(): void {

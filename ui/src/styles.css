@@ -46,3 +46,8 @@ button.link { background: none; border: none; padding: 0; color: var(--vscode-te
 .line.warn { color: var(--vscode-editorWarning-foreground); }
 .line.error { color: var(--vscode-errorForeground); }
 .links { display: flex; gap: 14px; margin-top: 4px; }
+.progress { height: 4px; margin: 6px 0; background: var(--vscode-progressBar-background); background: color-mix(in srgb, var(--vscode-progressBar-background) 25%, transparent); border-radius: 2px; overflow: hidden; }
+.progress .bar { height: 100%; background: var(--vscode-progressBar-background); transition: width 0.3s; }
+.summary { white-space: pre-wrap; color: var(--vscode-descriptionForeground); }
+label.inline { display: inline-block; margin: 0 6px 0 0; }
+details summary { cursor: pointer; }

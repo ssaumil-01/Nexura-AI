@@ -47,6 +47,22 @@ export interface RunView {
 
 export type BackendState = "starting" | "ready" | "error" | "stopped";
 
+export interface ProjectView {
+  profile: { languages?: string[]; frameworks?: string[]; test_commands?: string[]; run_commands?: string[]; lint_command?: string | null };
+  summary: string | null;
+  needsApproval: string[];
+  granted: string[];
+}
+
+export interface IndexView {
+  state: "off" | "idle" | "indexing" | "ready" | "error" | "missing_deps";
+  done?: number;
+  total?: number | null;
+  files?: number;
+  chunks?: number;
+  message?: string;
+}
+
 export interface UiState {
   backend: BackendState;
   backendMessage?: string;
@@ -54,6 +70,8 @@ export interface UiState {
   log: LogLine[];
   hasGeminiKey: boolean;
   workspace?: string;
+  project?: ProjectView;
+  index?: IndexView;
 }
 
 export type HostMessage = { type: "state"; state: UiState };
@@ -65,7 +83,11 @@ export type WebviewMessage =
   | { type: "resume" }
   | { type: "undo"; scope: "task" | "run" }
   | { type: "planDecision"; decision: "approve" | "feedback"; text?: string }
-  | { type: "approve"; decision: "approve" | "reject"; note?: string }
+  | { type: "approve"; decision: "approve" | "reject"; note?: string; rejectedFiles?: string[] }
+  | { type: "rebuildIndex" }
+  | { type: "showSummary" }
+  | { type: "editProfile" }
+  | { type: "enableIndexing" }
   | { type: "openDiff"; file: string }
   | { type: "openPlan" }
   | { type: "setKey"; provider: "gemini" | "groq" }
@@ -87,6 +109,10 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
     case "openPlan":
     case "showLogs":
     case "restartBackend":
+    case "rebuildIndex":
+    case "showSummary":
+    case "editProfile":
+    case "enableIndexing":
       return { type: m.type };
     case "startRun":
       return isStr(m.prompt) && m.prompt.trim() ? { type: "startRun", prompt: m.prompt } : undefined;
@@ -99,7 +125,11 @@ export function parseWebviewMessage(raw: unknown): WebviewMessage | undefined {
         : undefined;
     case "approve":
       if (m.decision !== "approve" && m.decision !== "reject") return undefined;
-      return { type: "approve", decision: m.decision, note: isStr(m.note, 2000) ? m.note : undefined };
+      return {
+        type: "approve", decision: m.decision, note: isStr(m.note, 2000) ? m.note : undefined,
+        rejectedFiles: Array.isArray(m.rejectedFiles) && m.rejectedFiles.length <= 200 && m.rejectedFiles.every((f) => isStr(f, 1024))
+          ? (m.rejectedFiles as string[]) : undefined,
+      };
     case "openDiff":
       return isStr(m.file, 1024) && m.file.length > 0 ? { type: "openDiff", file: m.file } : undefined;
     case "setKey":

@@ -35,6 +35,11 @@ as done when its acceptance checks actually pass.
 | Nexura: Set Gemini API Key / Set Groq API Key | Store a key in SecretStorage |
 | Nexura: Show Logs | Open the "Nexura" output channel |
 | Nexura: Restart Backend | Restart the local Python server |
+| Nexura: Enable Code Indexing | Optional: install the indexing packages, accept the one-time local model download, index this folder |
+| Nexura: Rebuild Index | Rebuild the local code index (progress in the status bar) |
+| Nexura: Show Project Summary | Show the detected profile and a short summary of the project (written by the planner's model) |
+| Nexura: Edit Project Profile | Override the detected test/run/lint commands; approve extra executables (`poetry`, `yarn`, ...) for this folder |
+| Nexura: Debug Retrieval | Show what the code index returns for a query |
 
 ## Settings
 
@@ -44,6 +49,18 @@ as done when its acceptance checks actually pass.
 | `nexura.model.coder` / `nexura.model.planner` | `gemini-3.1-flash-lite-preview` | Model names |
 | `nexura.pythonPath` | empty | Python 3.11+ to run the backend |
 | `nexura.protectedPaths` | `[]` | Extra patterns that always need approval, e.g. `migrations/`, `*.sql` |
+| `nexura.indexing.enabled` | `false` | Index this project locally (optional packages + a one-time ~130 MB model download, asked first). Nothing leaves your computer. |
+| `nexura.retrievalMode` | `v1` | `v2` uses the code index for context and planning (falls back to v1 if the index is not ready) |
+| `nexura.patchMode` | `v1` | `v2`: multi-hunk patches that match exactly one place and keep line endings |
+| `nexura.baseline` | `ask` | `ask`, `always` or `never`: run the project's tests before and after a run to catch regressions |
+
+## Existing projects
+
+Open a folder that already has code and the sidebar shows the detected profile (languages, frameworks, test and run
+commands). If the project uses `poetry`, `yarn`, `pnpm`, `make`, `uv`, `tox` or `pipenv`, Nexura asks once whether it may run
+it **in this folder** (it still cannot install packages through them). With `nexura.baseline` on, a run starts by running your
+test command; at the end, tests that passed before and fail now are reported as a regression, with an offer to undo. When a
+task changes several files you can untick a file in the approval card to reject only that file's changes.
 
 `.env*` files and `.git/` can never be modified by Nexura, and `.env*` files and anything in `.gitignore` /
 `.nexuraignore` are never sent to the model.

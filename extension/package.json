@@ -33,7 +33,11 @@
       { "command": "nexura.setGroqKey", "title": "Set Groq API Key", "category": "Nexura" },
       { "command": "nexura.showLogs", "title": "Show Logs", "category": "Nexura" },
       { "command": "nexura.restartBackend", "title": "Restart Backend", "category": "Nexura" },
-      { "command": "nexura.debugRetrieval", "title": "Debug Retrieval", "category": "Nexura" }
+      { "command": "nexura.debugRetrieval", "title": "Debug Retrieval", "category": "Nexura" },
+      { "command": "nexura.rebuildIndex", "title": "Rebuild Index", "category": "Nexura" },
+      { "command": "nexura.enableIndexing", "title": "Enable Code Indexing", "category": "Nexura" },
+      { "command": "nexura.showProjectSummary", "title": "Show Project Summary", "category": "Nexura" },
+      { "command": "nexura.editProjectProfile", "title": "Edit Project Profile", "category": "Nexura" }
     ],
     "configuration": {
       "title": "Nexura",
@@ -46,6 +50,10 @@
         },
         "nexura.model.coder": { "type": "string", "default": "gemini-3.1-flash-lite-preview", "description": "Model used by the coder and debugger agents." },
         "nexura.model.planner": { "type": "string", "default": "gemini-3.1-flash-lite-preview", "description": "Model used by the planner." },
+        "nexura.indexing.enabled": { "type": "boolean", "default": false, "description": "Index this project locally so Nexura can find relevant code. Needs optional Python packages and a one-time local model download (asked first). Nothing leaves your computer." },
+        "nexura.retrievalMode": { "type": "string", "enum": ["v1", "v2"], "default": "v1", "description": "v1: the basic context. v2: retrieval from the code index (falls back to v1 when the index is not ready)." },
+        "nexura.patchMode": { "type": "string", "enum": ["v1", "v2"], "default": "v1", "description": "v2: Nexura edits existing files with multi-hunk patches that match exactly one place and keep line endings." },
+        "nexura.baseline": { "type": "string", "enum": ["ask", "always", "never"], "default": "ask", "description": "Run the project's own test command before and after a run to detect regressions." },
         "nexura.pythonPath": { "type": "string", "default": "", "description": "Python 3.11+ used to run the Nexura backend. Empty: use the Python extension's interpreter, else a private virtual environment." },
         "nexura.protectedPaths": {
           "type": "array",
