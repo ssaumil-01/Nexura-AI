@@ -145,9 +145,10 @@ def test_planner_retries_transient_api_errors_with_backoff(planner, monkeypatch)
 
 def test_planner_gives_up_on_persistent_transient_errors(planner, monkeypatch):
     import time
+    import config
     from agents.planner import PlanError
     monkeypatch.setattr(time, "sleep", lambda s: None)
-    planner.replies = [RuntimeError("503 UNAVAILABLE")] * 3
+    planner.replies = [RuntimeError("503 UNAVAILABLE")] * config.LLM_MAX_ATTEMPTS
     with pytest.raises(PlanError, match="LLM call failed"):
         planner.plan("x", planner.path)
 
@@ -174,7 +175,7 @@ def test_validate_plan_flags_unrunnable_acceptance_commands():
 def test_planner_prompt_version_and_granularity():
     import config
     from agents.planner import PROMPT_TEMPLATE
-    assert config.PROMPT_VERSIONS["planner"] == "5" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
+    assert config.PROMPT_VERSIONS["planner"] == "6" and "3-8 STEPS" in PROMPT_TEMPLATE and "acceptance" in PROMPT_TEMPLATE
 
 
 def test_planner_node_failure_ends_run_not_crash(monkeypatch, planner):

@@ -91,9 +91,10 @@ def has_checkpoint(root: Path | str, run_id: str, task_id: int | str) -> bool:
     return _git(root, "rev-parse", "-q", "--verify", ref_name(run_id, task_id), check=False).returncode == 0
 
 
-def _blob(root, commit: str, path: str) -> bytes | None:
+def _blob(root, commit: str, path: str, filters: bool = True) -> bytes | None:
     # --filters applies the working-tree conversion (autocrlf / .gitattributes) so the restore is byte-exact
-    r = _git(root, "cat-file", "--filters", f"--path={path}", f"{commit}:{path}", check=False, text=False)
+    args = ["cat-file", "--filters", f"--path={path}"] if filters else ["cat-file", "blob"]
+    r = _git(root, *args, f"{commit}:{path}", check=False, text=False)
     return r.stdout if r.returncode == 0 else None
 
 
@@ -119,7 +120,7 @@ def _plan_undo(changes: list[dict]) -> dict[str, dict]:
     """Per file: the EARLIEST task that touched it (its checkpoint is the state to restore) and the LAST recorded hash."""
     files: dict[str, dict] = {}
     for c in changes:  # ordered by id
-        f = files.setdefault(c["file"], {"task_id": c["task_id"], "last_after": None})
+        f = files.setdefault(c["file"], {"task_id": c["task_id"], "last_after": None, "first_before": c.get("sha256_before")})
         f["last_after"] = c["sha256_after"]
     return files
 
@@ -148,6 +149,12 @@ def undo(root: Path | str, run_id: str, changes: list[dict], confirm_conflicts: 
         commit = _git(root, "rev-parse", ref_name(run_id, info["task_id"])).stdout.strip()
         target = resolve_in_root(root, f)
         before = _blob(root, commit, f)
+        want = info.get("first_before")
+        if before is not None and want and hashlib.sha256(before).hexdigest() != want:
+            # the working-tree conversion would change the bytes (e.g. LF files while core.autocrlf=true): use the stored bytes
+            raw = _blob(root, commit, f, filters=False)
+            if raw is not None and hashlib.sha256(raw).hexdigest() == want:
+                before = raw
         if before is None:                      # did not exist before the task: remove it
             if target.exists():
                 target.unlink()

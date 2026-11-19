@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ApprovalView, HostMessage, LogLine, RunView, TaskView, UiState, WebviewMessage } from "../../extension/src/protocol";
+import type { ApprovalView, HostMessage, IndexView, LogLine, ProjectView, RunView, TaskView, UiState, WebviewMessage } from "../../extension/src/protocol";
 
 const vscode = acquireVsCodeApi();
 const send = (m: WebviewMessage) => vscode.postMessage(m);
@@ -27,6 +27,7 @@ export function App() {
     <main className="app">
       <BackendBanner state={state} />
       {!state.hasGeminiKey && state.backend !== "error" && <KeyBanner />}
+      {state.backend === "ready" && <ProjectCard project={state.project} index={state.index} />}
       <PromptBox disabled={active || state.backend !== "ready"} />
       {run && <RunPanel run={run} active={active} />}
       {run?.approval && <ApprovalCard a={run.approval} />}
@@ -57,6 +58,45 @@ function KeyBanner() {
       <span>Add your Gemini API key to start.</span>
       <button onClick={() => send({ type: "setKey", provider: "gemini" })}>Set key</button>
     </div>
+  );
+}
+
+function ProjectCard({ project, index }: { project?: ProjectView; index?: IndexView }) {
+  if (!project && (!index || index.state === "off")) return null;
+  const p = project?.profile ?? {};
+  const known = [...(p.languages ?? []), ...(p.frameworks ?? [])];
+  const pct = index?.total ? Math.floor(((index.done ?? 0) / index.total) * 100) : 0;
+  return (
+    <section aria-label="Project">
+      <h2>Project</h2>
+      {known.length > 0 && <p>{known.join(", ")}</p>}
+      {p.test_commands?.[0] && <p className="hint">Tests: {p.test_commands[0]}</p>}
+      {p.run_commands?.[0] && <p className="hint">Run: {p.run_commands[0]}</p>}
+      {project?.needsApproval && project.needsApproval.length > 0 && (
+        <p className="hint">Not allowed yet for this workspace: {project.needsApproval.join(", ")} (use Edit profile to review).</p>
+      )}
+      {project?.summary && <details><summary>Summary</summary><p className="summary">{project.summary}</p></details>}
+      {index && index.state === "indexing" && (
+        <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Indexing">
+          <div className="bar" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {index && index.state !== "off" && (
+        <p className="hint" aria-live="polite">
+          {index.state === "indexing" ? `Indexing ${pct}%` : index.state === "ready" ? `Index ready (${index.files ?? 0} files)` :
+            index.state === "missing_deps" ? "Indexing packages are not installed" : index.message || `Index: ${index.state}`}
+        </p>
+      )}
+      <div className="row wrap">
+        <button onClick={() => send({ type: "editProfile" })}>Edit profile</button>
+        <button onClick={() => send({ type: "showSummary" })}>Summary</button>
+        {index?.state === "off" || !index ? (
+          <button onClick={() => send({ type: "enableIndexing" })}>Enable indexing</button>
+        ) : (
+          <button disabled={index.state === "indexing"} onClick={() => send({ type: "rebuildIndex" })}>Rebuild index</button>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -141,6 +181,9 @@ function PlanDecision() {
 
 function ApprovalCard({ a }: { a: ApprovalView }) {
   const [note, setNote] = useState("");
+  const [rejected, setRejected] = useState<string[]>([]);
+  const toggle = (f: string) => setRejected((r) => (r.includes(f) ? r.filter((x) => x !== f) : [...r, f]));
+  const perFile = a.diffs.length > 1;
   return (
     <section className="approval" aria-label="Approval needed">
       <h2>Approval needed (task {a.task_id})</h2>
@@ -149,6 +192,12 @@ function ApprovalCard({ a }: { a: ApprovalView }) {
         <ul className="files">
           {a.diffs.map((d) => (
             <li key={d.file}>
+              {perFile && (
+                <label className="inline">
+                  <input type="checkbox" checked={!rejected.includes(d.file)} onChange={() => toggle(d.file)} />
+                  <span className="sr">Approve {d.file}</span>
+                </label>
+              )}
               <button className="link" onClick={() => send({ type: "openDiff", file: d.file })} title="Open the diff in the editor">
                 {d.file}
               </button>
@@ -157,10 +206,13 @@ function ApprovalCard({ a }: { a: ApprovalView }) {
           ))}
         </ul>
       )}
+      {perFile && <p className="hint">Untick a file to reject only its changes; the rest is approved.</p>}
       <label htmlFor="note">Note for the agent (optional)</label>
       <input id="note" type="text" value={note} onChange={(e) => setNote(e.target.value)} />
       <div className="row">
-        <button className="primary" onClick={() => send({ type: "approve", decision: "approve", note: note || undefined })}>Approve</button>
+        <button className="primary" onClick={() => send({ type: "approve", decision: "approve", note: note || undefined, rejectedFiles: rejected.length ? rejected : undefined })}>
+          {rejected.length ? `Approve ${a.diffs.length - rejected.length} of ${a.diffs.length}` : "Approve"}
+        </button>
         <button onClick={() => send({ type: "approve", decision: "reject", note: note || undefined })}>Reject</button>
       </div>
     </section>

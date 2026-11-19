@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import config
+from core import patching
 from core.safety import SafetyError, check_writable, resolve_in_root
 from core.schemas import Action, ProjectContext
 
@@ -43,7 +44,7 @@ def _diff(rel: str, before: str | None, after: str | None) -> tuple[str, int]:
 def preview(action: Action, ctx: ProjectContext) -> list[dict]:
     """Simulate a file action WITHOUT touching disk. Returns [{file, change_type, before, after, diff, lines}]."""
     a = action.action
-    if a not in ("create_file", "write_file", "patch_file", "batch_file_operations", "delete_file", "rename_file"):
+    if a not in ("create_file", "write_file", "patch_file", "apply_patch", "batch_file_operations", "delete_file", "rename_file"):
         return []
     overlay: dict[str, str | None] = {}   # rel -> content after earlier ops of the same action (None = deleted)
     first_before: dict[str, str | None] = {}
@@ -56,11 +57,16 @@ def preview(action: Action, ctx: ProjectContext) -> list[dict]:
         except SafetyError:
             return None
 
-    def apply(op: str, rel: str, content=None, search=None, replace=None, dest=None):
+    def apply(op: str, rel: str, content=None, search=None, replace=None, dest=None, hunks=None):
         before = cur(rel)
         first_before.setdefault(rel, before)
         if op in ("create", "write"):
             overlay[rel] = content or ""
+        elif op == "patch" and config.PATCH_MODE == "v2":
+            try:   # the same engine the tool uses, so the diff shown is the diff that will be written
+                overlay[rel] = patching.apply_hunks(before or "", hunks or [{"search_text": search or "", "replace_text": replace or ""}])
+            except SafetyError:
+                overlay[rel] = before     # cannot apply: the validator reports the precise error
         elif op == "patch":
             overlay[rel] = (before or "").replace(search or "", replace or "") if search else before
         elif op == "delete":
@@ -76,8 +82,8 @@ def preview(action: Action, ctx: ProjectContext) -> list[dict]:
     elif a == "rename_file":
         apply("rename", action.path, dest=action.metadata.get("destination"))
     else:
-        op = {"create_file": "create", "write_file": "write", "patch_file": "patch", "delete_file": "delete"}[a]
-        apply(op, action.path, action.content, action.search_text, action.replace_text)
+        op = {"create_file": "create", "write_file": "write", "patch_file": "patch", "apply_patch": "patch", "delete_file": "delete"}[a]
+        apply(op, action.path, action.content, action.search_text, action.replace_text, hunks=action.metadata.get("hunks") if a == "apply_patch" else None)
 
     out = []
     for rel, after in overlay.items():

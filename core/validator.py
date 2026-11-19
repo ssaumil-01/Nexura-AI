@@ -2,18 +2,19 @@
 import os
 
 import config
+from core import patching
 from core.safety import SafetyError, check_writable, is_ignored, parse_command, resolve_in_root, NEVER_IN_CONTEXT
 from core.schemas import Action, ProjectContext, ValidationResult
 
 OK = ValidationResult(ok=True)
 
-RBW_ACTIONS = {"create_file", "write_file", "patch_file", "batch_file_operations"}   # read-before-write rules apply
+RBW_ACTIONS = {"create_file", "write_file", "patch_file", "apply_patch", "batch_file_operations"}   # read-before-write rules apply
 WRITE_ACTIONS = RBW_ACTIONS | {"delete_file", "rename_file"}
 MUTATING = WRITE_ACTIONS | {"create_directory", "run_command", "install_dependency", "start_process"}
 # action -> required (field | metadata key)
 REQUIRED = {
     "create_file": ["path", "content"], "write_file": ["path", "content"],
-    "patch_file": ["path", "search_text", "replace_text"], "read_file": ["path"],
+    "patch_file": ["path", "search_text", "replace_text"], "apply_patch": ["path", "m:hunks"], "read_file": ["path"],
     "delete_file": ["path"], "rename_file": ["path", "m:destination"],
     "create_directory": ["path"], "list_directory": [],
     "batch_file_operations": ["m:operations"],
@@ -23,7 +24,7 @@ REQUIRED = {
     "web_search": ["m:query"], "task_complete": [],
 }
 # What the Debugger may do (fix the failure; no new files, no plan edits, no installs)
-DEBUG_ALLOWED = {"read_file", "patch_file", "write_file", "run_command", "list_directory", "verify_code_syntax"}
+DEBUG_ALLOWED = {"read_file", "patch_file", "apply_patch", "write_file", "run_command", "list_directory", "verify_code_syntax"}
 PLAN_FILES = {"plan.json", "plan.md"}
 
 
@@ -51,7 +52,7 @@ def validate_schema(action: Action) -> ValidationResult:
 
 
 def validate_allowed_action(action: Action, mode: str = "code") -> ValidationResult:
-    if action.action not in config.ALLOWED_ACTIONS:
+    if action.action not in config.ALLOWED_ACTIONS or (action.action == "apply_patch" and config.PATCH_MODE != "v2"):
         return fail("NOT_ALLOWED", f"Action '{action.action}' is not allowed.")
     if mode == "debug" and action.action not in DEBUG_ALLOWED:
         return fail("NOT_ALLOWED_IN_DEBUG", f"The debugger may only use: {', '.join(sorted(DEBUG_ALLOWED))}.")
@@ -104,7 +105,7 @@ def validate_read_before_write(action: Action, ctx: ProjectContext) -> Validatio
     if action.action not in RBW_ACTIONS:
         return OK
     ops = _ops(action) if action.action == "batch_file_operations" else [
-        {"operation": {"create_file": "create", "write_file": "write", "patch_file": "patch"}[action.action], "target_file": action.path}]
+        {"operation": {"create_file": "create", "write_file": "write", "patch_file": "patch", "apply_patch": "patch"}[action.action], "target_file": action.path}]
     known = set(ctx.files_read)  # simulate sequential effects inside a batch
     for o in ops:
         kind, target = o.get("operation"), o.get("target_file")
@@ -128,11 +129,29 @@ def validate_read_before_write(action: Action, ctx: ProjectContext) -> Validatio
     return OK
 
 
+def validate_patch(action: Action, ctx: ProjectContext) -> ValidationResult:
+    """V2: a patch that cannot apply is rejected BEFORE the user is asked to approve it (dry run against the file on disk)."""
+    if config.PATCH_MODE != "v2" or action.action not in ("apply_patch", "patch_file"):
+        return OK
+    hunks = action.metadata.get("hunks") if action.action == "apply_patch" else [
+        {"search_text": action.search_text, "replace_text": action.replace_text}]
+    try:
+        full = resolve_in_root(ctx.root, action.path)
+        patching.check_hunks(hunks)
+        if full.is_file():
+            patching.patch_bytes(full.read_bytes(), hunks, ctx.limits.max_file_bytes)
+    except SafetyError as e:
+        return fail(e.code, e.message)
+    except OSError as e:
+        return fail("FILE_NOT_FOUND", str(e))
+    return OK
+
+
 def validate_command(action: Action, ctx: ProjectContext) -> ValidationResult:
     if action.action not in ("run_command", "install_dependency", "start_process"):
         return OK
     try:
-        parse_command(action.command, ctx.root, allow_install=(action.action == "install_dependency"))
+        parse_command(action.command, ctx.root, allow_install=(action.action == "install_dependency"), extra_allowed=ctx.extra_commands)
     except SafetyError as e:
         return fail(e.code, e.message)
     return OK
@@ -202,6 +221,7 @@ def validate(action: Action, ctx: ProjectContext, mode: str = "code") -> Validat
         lambda: validate_ignored(action, ctx),
         lambda: validate_read_before_write(action, ctx),
         lambda: validate_command(action, ctx),
+        lambda: validate_patch(action, ctx),
         lambda: validate_protected_path(action, ctx),
     ]
     for check in checks:

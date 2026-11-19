@@ -10,7 +10,7 @@ import config
 from core import execution_manager as em
 
 _override: Any = None  # tests inject a fake chat model here
-_cache: dict[str, Any] = {}
+_cache: dict[tuple, Any] = {}
 
 
 def set_llm(llm: Any) -> None:
@@ -38,9 +38,10 @@ def llm_with_tools(role: str):
     if _override is not None:
         return _override
     name = model_for(role)
-    if name not in _cache:
-        _cache[name] = get_llm(name).bind_tools(em.TOOL_SCHEMAS)
-    return _cache[name]
+    key = (name, config.PATCH_MODE)
+    if key not in _cache:
+        _cache[key] = get_llm(name).bind_tools(em.tool_schemas())
+    return _cache[key]
 
 
 def _short(text: Any, n: int = 200) -> str:
@@ -53,12 +54,13 @@ TRANSIENT = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTE
                        r"ConnectionError|ReadError|RemoteProtocolError", re.IGNORECASE)
 
 
-QUOTA = re.compile(r"PerDay|per day limit|limit exceeded on free tier", re.IGNORECASE)
+QUOTA = re.compile(r"PerDay|per day", re.IGNORECASE)    # per-MINUTE limits ("tokens per minute ... exceeded on Free Tier") are transient
+RETRY_DELAY = re.compile(r"(?:retryDelay['\": ]+|retry in )(\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
 def quota_message(error_text: str) -> str | None:
     """A DAILY/long quota exhaustion is not transient: waiting a few seconds will not help, so fail fast with a clear message."""
-    m = re.search(r"retryDelay['\": ]+(\d+(?:\.\d+)?)s", error_text)
+    m = RETRY_DELAY.search(error_text)
     delay = float(m.group(1)) if m else 0.0
     if QUOTA.search(error_text) or delay > 300:
         when = f" (resets in about {delay / 3600:.0f}h)" if delay > 3600 else ""
@@ -72,7 +74,7 @@ def is_rate_limit(error_text: str) -> bool:
 
 def backoff_delay(attempt: int, error_text: str) -> float:
     """Seconds to wait after a rate limit: server's retryDelay if present, else exponential; plus jitter."""
-    m = re.search(r"retryDelay['\": ]+(\d+(?:\.\d+)?)s", error_text)
+    m = RETRY_DELAY.search(error_text)
     base = float(m.group(1)) + 2 if m else min(5 * 2 ** attempt, 60)
     return min(base, 120) + random.uniform(0, base * 0.25)
 
@@ -81,7 +83,7 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
     """Call the model. Returns (response, None) or (None, failure_reason). Rate limits retry with backoff."""
     model = model_for(role)
     detail = ""
-    for attempt in range(config.MAX_RETRIES):
+    for attempt in range(config.LLM_MAX_ATTEMPTS):
         try:
             response = llm_with_tools(role).invoke(messages)
             if on_log:
@@ -106,9 +108,9 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
                     on_log(role=role, prompt_version=prompt_version, model=model, result="error")
                 return None, f"LLM_ERROR: {_short(err, 150)}"
             detail = _short(err, 150)
-            if attempt + 1 < config.MAX_RETRIES:
+            if attempt + 1 < config.LLM_MAX_ATTEMPTS:
                 wait = backoff_delay(attempt, err)
-                print(f"  [!] Rate limited (attempt {attempt + 1}/{config.MAX_RETRIES}). Waiting {wait:.1f}s...")
+                print(f"  [!] Rate limited (attempt {attempt + 1}/{config.LLM_MAX_ATTEMPTS}). Waiting {wait:.1f}s...")
                 time.sleep(wait)
     if on_log:
         on_log(role=role, prompt_version=prompt_version, model=model, result="rate_limited")

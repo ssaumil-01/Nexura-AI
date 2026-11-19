@@ -83,6 +83,23 @@ def _print_event(event):
                     print(f"  [{msg.name}] -> {msg.content[:200]}")
 
 
+def start_index(root):
+    """V2: index the workspace in the background (the run uses the V1 context until it is ready). None if unavailable."""
+    try:
+        from rag.embedder import make_embedder
+        from rag.indexer import IndexManager
+    except ImportError:
+        print("[Index] indexing packages not installed (pip install -r requirements-index.txt); using the basic context.")
+        return None
+    from core.runner import workspace_id_for
+    wid = workspace_id_for(str(root))
+    mgr = IndexManager(make_embedder, emit=lambda w, t, d: print(f"[Index] {t} {d}") if t != "index_progress" else None)
+    mgr.start(wid, root)
+    ix = mgr.indexer(wid, root)
+    ix.open()   # so the run's edits keep the index fresh while it builds
+    return ix
+
+
 def main():
     parser = argparse.ArgumentParser(description="Nexura AI - Autonomous Coding Agent")
     parser.add_argument("--prompt", type=str, help="Natural language request for the project")
@@ -97,6 +114,8 @@ def main():
     parser.add_argument("--undo", metavar="RUN_ID", help="Undo a run's changes (all of them, or one task with --task)")
     parser.add_argument("--task", type=int, help="With --undo: only this task")
     parser.add_argument("--confirm", action="store_true", help="With --undo: overwrite files you edited since the run")
+    parser.add_argument("--baseline", action="store_true",
+                        help="Run the project's own test command before and after the run and report new failures (regressions)")
     parser.add_argument("--metrics", metavar="RUN_ID", help="Print metrics for a run and exit")
 
     args = parser.parse_args()
@@ -134,6 +153,12 @@ def main():
     except GitError as e:
         print(f"Cannot start: {e.message}" + ("\nRe-run with --git-init to create a repository here." if e.code == "NOT_A_REPO" else ""))
         sys.exit(2)
+
+    if args.baseline and not args.resume:   # passing the flag is the approval to run the project's tests
+        from core.planner_context import effective_profile
+        project.baseline_command = (effective_profile(project).test_commands or [""])[0]
+    if nexura_config.INDEXING_ENABLED:
+        project.indexer = start_index(project.root)
 
     graph = build_graph(interactive=args.interactive, checkpointer=make_checkpointer(nexura_config.CHECKPOINT_DB_PATH))
 

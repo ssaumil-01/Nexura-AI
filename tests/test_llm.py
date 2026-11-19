@@ -45,7 +45,7 @@ def test_invoke_retries_a_timeout_then_succeeds(monkeypatch):
 
 def test_invoke_reports_persistent_overload_and_hard_errors_differently(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
-    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("503 UNAVAILABLE")] * 3, calls=[]))
+    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("503 UNAVAILABLE")] * config.LLM_MAX_ATTEMPTS, calls=[]))
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_UNAVAILABLE")
     monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("401 API key not valid")], calls=[]))
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_ERROR")
@@ -65,6 +65,21 @@ def test_daily_quota_exhaustion_fails_fast_with_a_clear_reason(monkeypatch):
     resp, failure = llm.invoke("coder", ["hi"], "1")
     assert resp is None and failure.startswith("LLM_QUOTA") and "10h" in failure
     assert sleeps == [] and len(fake.calls) == 1
+
+
+GEMINI_PER_MINUTE = ("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota. * Quota exceeded for metric: "
+                     "generate_content_free_tier_input_token_count, limit: 250000, description: Generate content input tokens per minute "
+                     "limit exceeded on Free Tier.\nPlease retry in 5.5s.'}}")
+
+
+def test_per_minute_token_limits_are_retried_not_treated_as_a_daily_quota(monkeypatch):
+    """A tokens-per-minute limit on the free tier says 'exceeded on Free Tier' too, but waiting a few seconds fixes it."""
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception(GEMINI_PER_MINUTE), tool_call_msg("task_complete", {"summary": "x"})], calls=[]))
+    assert llm.quota_message(GEMINI_PER_MINUTE) is None
+    resp, failure = llm.invoke("coder", ["hi"], "1")
+    assert failure is None and len(sleeps) == 1 and 7 <= sleeps[0] < 12     # the server's "retry in 5.5s" (+2s) is honoured
 
 
 def test_short_rate_limits_are_still_retried(monkeypatch):

@@ -12,6 +12,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:                                  # embedding models are NEVER downloaded in CI (tests use FakeEmbedder)
+      NEXURA_ALLOW_MODEL_DOWNLOAD: "0"
+      HF_HUB_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }          # the scope audit diffs against the base commit
@@ -22,7 +25,7 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: pytest -q
+      - run: pytest -q --runslow
       - run: python evals/run.py --fake --out evals/results/_ci
 
   extension:

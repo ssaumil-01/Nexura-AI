@@ -1,0 +1,33 @@
+# Fixture projects for the V2 evals: how to run and test each, and the known baseline test result.
+
+flask_notes:
+  run: python -m flask --app app run --port 5050
+  test: python -m pytest -q
+  runner: pytest
+  baseline:
+    passed: 4
+    failed: []
+  needs: flask
+js_todo:
+  run: node src/cli.js list
+  test: node --test
+  runner: node
+  baseline:
+    passed: 5
+    failed: []
+  needs: node
+inventory_pkg:
+  run: python main.py report
+  test: python -m pytest -q
+  runner: pytest
+  baseline:
+    passed: 6
+    failed: []
+buggy_shop:
+  run: python -c "from shop.cart import Cart; c = Cart(); c.add('apple', 3); print(c.total())"
+  test: python -m pytest -q
+  runner: pytest
+  baseline:
+    passed: 3
+    failed:
+    - tests/test_cart.py::test_total_with_discount

@@ -24,10 +24,10 @@ def kill_tree(pid: int) -> None:
     psutil.wait_procs(procs, timeout=5)
 
 
-def _popen(argv: list[str], cwd: str) -> subprocess.Popen:
+def _popen(argv: list[str], cwd: str, env: dict | None = None) -> subprocess.Popen:
     kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     return subprocess.Popen(argv, cwd=cwd, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, **kw)
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, **kw)
 
 
 def _pump(proc: subprocess.Popen, lines: list[str], echo: bool) -> threading.Thread:
@@ -43,10 +43,11 @@ def _pump(proc: subprocess.Popen, lines: list[str], echo: bool) -> threading.Thr
     return t
 
 
-def run_bounded(argv: list[str], cwd: str, timeout: int, max_bytes: int, echo: bool = True) -> tuple[int | None, str, bool]:
+def run_bounded(argv: list[str], cwd: str, timeout: int, max_bytes: int, echo: bool = True,
+                env: dict | None = None) -> tuple[int | None, str, bool]:
     """Run to completion. Returns (exit_code or None on timeout, output, timed_out)."""
     lines: list[str] = []
-    proc = _popen(argv, cwd)
+    proc = _popen(argv, cwd, env)
     t = _pump(proc, lines, echo)
     timed_out = False
     try:

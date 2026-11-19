@@ -1,0 +1,8 @@
+# Optional: code indexing and retrieval (V2). Not needed for V1 behavior (RETRIEVAL_MODE=v1).
+# Local only: embeddings run on this machine via ONNX (no PyTorch, no cloud embedding API).
+tree-sitter==0.26.1
+tree-sitter-python==0.25.0
+tree-sitter-javascript==0.25.0
+tree-sitter-typescript==0.23.2
+chromadb==1.5.9
+fastembed==0.9.1

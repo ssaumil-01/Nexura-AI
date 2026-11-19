@@ -5,22 +5,33 @@ import json
 import re
 import time
 
-from core.safety import SafetyError, rel_path, resolve_in_root
+from core.safety import SafetyError, rel_path, relativize, resolve_in_root
 from core.schemas import Action, ExecResult, FileChange, ProjectContext
 from core.validator import MUTATING
 
 from tools.directory_tools import create_directory, list_directory
-from tools.file_tools import batch_file_operations, create_file, delete_file, patch_file, read_file, rename_file, write_file
+from tools.file_tools import apply_patch, batch_file_operations, create_file, delete_file, patch_file, read_file, rename_file, write_file
 from tools.search_tools import web_search
 from tools.signals import task_complete
 from tools.system_tools import install_dependency, read_process_output, run_command, start_process, stop_process
 from tools.verification_tools import verify_code_syntax, verify_webapp_endpoint
 
-TOOL_SCHEMAS = [create_file, write_file, read_file, patch_file, batch_file_operations, delete_file, rename_file,
-                create_directory, list_directory,
-                run_command, install_dependency, start_process, read_process_output, stop_process, task_complete,
-                web_search, verify_code_syntax, verify_webapp_endpoint]
-TOOLS_BY_NAME = {t.name: t for t in TOOL_SCHEMAS}
+import config as _config  # noqa: E402
+
+_BASE_TOOLS = [create_file, write_file, read_file, patch_file, batch_file_operations, delete_file, rename_file,
+               create_directory, list_directory,
+               run_command, install_dependency, start_process, read_process_output, stop_process, task_complete,
+               web_search, verify_code_syntax, verify_webapp_endpoint]
+# apply_patch exists only with PATCH_MODE=v2 (V1 mode keeps exactly V1's tool list)
+TOOL_SCHEMAS = _BASE_TOOLS + ([apply_patch] if _config.PATCH_MODE == "v2" else [])
+
+
+def tool_schemas() -> list:
+    """The tools offered to the model right now (apply_patch only in PATCH_MODE=v2; read at call time so evals can switch modes)."""
+    return _BASE_TOOLS + ([apply_patch] if _config.PATCH_MODE == "v2" else [])
+
+
+TOOLS_BY_NAME = {t.name: t for t in _BASE_TOOLS + [apply_patch]}   # the validator refuses apply_patch unless PATCH_MODE=v2
 
 INTERNAL_ACTIONS = {"file_exists"}  # orchestrator-only (verification); never accepted from agents
 
@@ -35,6 +46,8 @@ def action_from_tool_call(name: str, args: dict) -> Action:
         return Action(action=name, path=get("target_file"), content=get("content"))
     if name == "patch_file":
         return Action(action=name, path=get("target_file"), search_text=get("search_text"), replace_text=get("replace_text"))
+    if name == "apply_patch":
+        return Action(action=name, path=get("target_file"), metadata={"hunks": get("hunks")})
     if name in ("read_file",):
         return Action(action=name, path=get("target_file"))
     if name == "create_directory":
@@ -68,6 +81,7 @@ def _tool_args(a: Action) -> dict:
         "create_file": lambda: {"target_file": a.path, "content": a.content},
         "write_file": lambda: {"target_file": a.path, "content": a.content},
         "patch_file": lambda: {"target_file": a.path, "search_text": a.search_text, "replace_text": a.replace_text},
+        "apply_patch": lambda: {"target_file": a.path, "hunks": m.get("hunks")},
         "read_file": lambda: {"target_file": a.path},
         "create_directory": lambda: {"target_dir": a.path},
         "list_directory": lambda: {"target_dir": a.path or "."},
@@ -99,7 +113,7 @@ def _sha(path) -> str | None:
 def _write_targets(a: Action, ctx: ProjectContext) -> list[str]:
     if a.action == "batch_file_operations":
         paths = [o.get("target_file") for o in (a.metadata.get("operations") or []) if isinstance(o, dict)]
-    elif a.action in ("create_file", "write_file", "patch_file", "delete_file"):
+    elif a.action in ("create_file", "write_file", "patch_file", "apply_patch", "delete_file"):
         paths = [a.path]
     elif a.action == "rename_file":
         paths = [a.path, a.metadata.get("destination")]
@@ -147,7 +161,13 @@ def _parse(name: str, out: str) -> dict:
 # ─── public API ─────────────────────────────────────────────
 
 def run(action: Action, ctx: ProjectContext, task_id: int = 0) -> ExecResult:
-    """Execute one (already validated) Action. Never raises."""
+    """Execute one (already validated) Action. Never raises. Output never contains the absolute workspace path."""
+    res = _run(action, ctx, task_id)
+    res.stdout, res.stderr = relativize(res.stdout, ctx.root), relativize(res.stderr, ctx.root)
+    return res
+
+
+def _run(action: Action, ctx: ProjectContext, task_id: int) -> ExecResult:
     t0 = time.monotonic()
     try:
         if not ctx.trusted and action.action in MUTATING:   # defence in depth: the validator already rejects these

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from core.schemas import FileChange, TaskRecord
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS = {
     1: """
@@ -34,6 +34,18 @@ MIGRATIONS = {
     """,
     2: """
     CREATE TABLE locks (workspace TEXT PRIMARY KEY, run_id TEXT NOT NULL, pid INTEGER NOT NULL, ts REAL NOT NULL);
+    """,
+    3: """
+    CREATE TABLE IF NOT EXISTS plan_versions (
+        run_id TEXT NOT NULL, version INTEGER NOT NULL, plan_json TEXT NOT NULL, reason TEXT, feedback TEXT,
+        created_at REAL NOT NULL, PRIMARY KEY (run_id, version));
+    CREATE TABLE IF NOT EXISTS project_profile (project_id TEXT PRIMARY KEY, profile_json TEXT NOT NULL, updated_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS repo_summary (
+        project_id TEXT PRIMARY KEY, summary TEXT NOT NULL, source_hash TEXT NOT NULL, version INTEGER NOT NULL, created_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS workspace_commands (project_id TEXT NOT NULL, exe TEXT NOT NULL, approved_at REAL NOT NULL, PRIMARY KEY (project_id, exe));
+    CREATE TABLE IF NOT EXISTS test_baselines (run_id TEXT PRIMARY KEY, data_json TEXT NOT NULL, created_at REAL NOT NULL);
+    INSERT OR IGNORE INTO plan_versions (run_id, version, plan_json, reason, feedback, created_at)
+        SELECT id, 1, plan_json, 'initial', NULL, created_at FROM runs WHERE plan_json IS NOT NULL;
     """,
 }
 
@@ -119,14 +131,33 @@ class StateManager:
                    "finished_at=CASE WHEN ? THEN ? ELSE finished_at END WHERE id=?",
                    (status, error, 1 if done else 0, time.time(), run_id))
 
-    def save_plan(self, run_id: str, plan: dict, tasks: list[TaskRecord]) -> None:
-        """Store the plan and (re)create the task rows. A re-plan replaces the previous tasks."""
-        self._exec("UPDATE runs SET plan_json=? WHERE id=?", (json.dumps(plan), run_id))
+    def save_plan(self, run_id: str, plan: dict, tasks: list[TaskRecord], feedback: str | None = None) -> int:
+        """Store the plan as a new version (history is kept; runs.plan_json is the current one) and (re)create the task rows.
+        Returns the version number."""
+        text = json.dumps(plan)
+        with self._lock, closing(self._conn()) as c:
+            version = (c.execute("SELECT MAX(version) FROM plan_versions WHERE run_id=?", (run_id,)).fetchone()[0] or 0) + 1
+            c.execute("INSERT INTO plan_versions (run_id, version, plan_json, reason, feedback, created_at) VALUES (?,?,?,?,?,?)",
+                      (run_id, version, text, "replan" if feedback else "initial", feedback, time.time()))
+            c.execute("UPDATE runs SET plan_json=? WHERE id=?", (text, run_id))
+            c.commit()
         self._exec("DELETE FROM tasks WHERE run_id=?", (run_id,))
         for t in tasks:
             self._exec("INSERT INTO tasks (run_id, task_id, title, description, dependencies, acceptance, status) VALUES (?,?,?,?,?,?,?)",
                        (run_id, t.task_id, t.title, t.description, json.dumps(t.dependencies),
                         json.dumps([a.model_dump(exclude_none=True) for a in t.acceptance]), "pending"))
+        return version
+
+    def list_plan_versions(self, run_id: str) -> list[dict]:
+        return [dict(r) for r in self._all("SELECT version, reason, feedback, created_at FROM plan_versions WHERE run_id=? ORDER BY version", (run_id,))]
+
+    def get_plan_version(self, run_id: str, version: int) -> dict | None:
+        rows = self._all("SELECT * FROM plan_versions WHERE run_id=? AND version=?", (run_id, version))
+        if not rows:
+            return None
+        d = dict(rows[0])
+        d["plan"] = json.loads(d.pop("plan_json"))
+        return d
 
     def get_run(self, run_id: str) -> RunRow | None:
         rows = self._all("SELECT * FROM runs WHERE id=?", (run_id,))
@@ -139,6 +170,45 @@ class StateManager:
     def project_path(self, project_id: str) -> str | None:
         rows = self._all("SELECT path FROM projects WHERE id=?", (project_id,))
         return rows[0]["path"] if rows else None
+
+    # ── project profile / summary / workspace commands / baselines (V2) ──
+    def save_profile(self, project_id: str, detected: dict, overrides: dict | None = None) -> None:
+        """`detected` is replaced on every detection; `overrides` (the user's edits) are kept unless passed."""
+        if overrides is None:
+            overrides = (self.get_profile(project_id) or {}).get("overrides", {})
+        self._exec("INSERT OR REPLACE INTO project_profile (project_id, profile_json, updated_at) VALUES (?,?,?)",
+                   (project_id, json.dumps({"detected": detected, "overrides": overrides}), time.time()))
+
+    def get_profile(self, project_id: str) -> dict | None:
+        rows = self._all("SELECT profile_json, updated_at FROM project_profile WHERE project_id=?", (project_id,))
+        return {**json.loads(rows[0]["profile_json"]), "updated_at": rows[0]["updated_at"]} if rows else None
+
+    def save_repo_summary(self, project_id: str, summary: str, source_hash: str) -> int:
+        prev = self.get_repo_summary(project_id)
+        version = (prev["version"] if prev else 0) + 1
+        self._exec("INSERT OR REPLACE INTO repo_summary (project_id, summary, source_hash, version, created_at) VALUES (?,?,?,?,?)",
+                   (project_id, summary, source_hash, version, time.time()))
+        return version
+
+    def get_repo_summary(self, project_id: str) -> dict | None:
+        rows = self._all("SELECT * FROM repo_summary WHERE project_id=?", (project_id,))
+        return dict(rows[0]) if rows else None
+
+    def grant_command(self, project_id: str, exe: str) -> None:
+        self._exec("INSERT OR IGNORE INTO workspace_commands (project_id, exe, approved_at) VALUES (?,?,?)", (project_id, exe, time.time()))
+
+    def revoke_command(self, project_id: str, exe: str) -> None:
+        self._exec("DELETE FROM workspace_commands WHERE project_id=? AND exe=?", (project_id, exe))
+
+    def list_commands(self, project_id: str) -> list[str]:
+        return [r["exe"] for r in self._all("SELECT exe FROM workspace_commands WHERE project_id=? ORDER BY exe", (project_id,))]
+
+    def save_baseline(self, run_id: str, data: dict) -> None:
+        self._exec("INSERT OR REPLACE INTO test_baselines (run_id, data_json, created_at) VALUES (?,?,?)", (run_id, json.dumps(data), time.time()))
+
+    def get_baseline(self, run_id: str) -> dict | None:
+        rows = self._all("SELECT data_json FROM test_baselines WHERE run_id=?", (run_id,))
+        return json.loads(rows[0]["data_json"]) if rows else None
 
     # ── tasks ──
     def mark_task(self, run_id: str, task_id: int, status: str, attempts: int | None = None, reason: str | None = None) -> None:

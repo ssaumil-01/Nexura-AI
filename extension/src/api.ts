@@ -33,6 +33,38 @@ export interface UndoResult {
   error: string | null;
 }
 
+export interface RetrievalResult {
+  path: string;
+  lines: [number, number];
+  symbol: string;
+  kind: string;
+  score: number;
+  sources: string[];
+  reason: string;
+  snippet: string;
+}
+
+export interface ProfileView {
+  profile: { languages?: string[]; frameworks?: string[]; test_commands?: string[]; run_commands?: string[]; lint_command?: string | null;
+             package_managers?: string[]; entry_points?: string[]; subprojects?: string[] };
+  detected: Record<string, unknown>;
+  overrides: Record<string, unknown>;
+  granted_commands: string[];
+  approvable_commands: string[];
+  needs_approval: string[];
+  summary: string | null;
+}
+
+export interface IndexStatus {
+  state: string;
+  done?: number;
+  total?: number | null;
+  files?: number;
+  chunks?: number;
+  error?: string | null;
+  notice?: string | null;
+}
+
 export interface StartRunBody {
   workspace_id: string;
   prompt: string;
@@ -40,6 +72,7 @@ export interface StartRunBody {
   dirty_policy: "checkpoint" | "abort";
   dirty_files: string[];
   git_init: boolean;
+  baseline?: boolean;
 }
 
 export class ApiClient {
@@ -82,8 +115,8 @@ export class ApiClient {
   planDecision(id: string, decision: "approve" | "feedback", text?: string) {
     return this.req("POST", `/runs/${id}/plan`, { decision, text });
   }
-  approve(id: string, decision: "approve" | "reject", note?: string) {
-    return this.req("POST", `/runs/${id}/approve`, { decision, note });
+  approve(id: string, decision: "approve" | "reject", note?: string, rejectedFiles: string[] = []) {
+    return this.req("POST", `/runs/${id}/approve`, { decision, note, rejected_files: rejectedFiles });
   }
   cancel(id: string) {
     return this.req("POST", `/runs/${id}/cancel`);
@@ -96,6 +129,34 @@ export class ApiClient {
   }
   edits(id: string, files: string[]) {
     return this.req("POST", `/runs/${id}/edits`, { files });
+  }
+  profile(workspaceId: string) {
+    return this.req<ProfileView>("GET", `/workspaces/${workspaceId}/profile`);
+  }
+  putProfile(workspaceId: string, overrides: Record<string, unknown>) {
+    return this.req<ProfileView>("PUT", `/workspaces/${workspaceId}/profile`, { overrides });
+  }
+  grantCommand(workspaceId: string, exe: string) {
+    return this.req<{ granted: string[] }>("POST", `/workspaces/${workspaceId}/commands`, { exe });
+  }
+  getSummary(workspaceId: string) {
+    return this.req<{ summary: string | null; version: number | null }>("GET", `/workspaces/${workspaceId}/summary`);
+  }
+  makeSummary(workspaceId: string) {
+    return this.req<{ summary: string; version: number }>("POST", `/workspaces/${workspaceId}/summary`);
+  }
+  startIndex(workspaceId: string, rebuild: boolean) {
+    return this.req("POST", `/workspaces/${workspaceId}/index`, { rebuild });
+  }
+  indexStatus(workspaceId: string) {
+    return this.req<IndexStatus>("GET", `/workspaces/${workspaceId}/index`);
+  }
+  indexChanges(workspaceId: string, paths: string[]) {
+    return this.req("POST", `/workspaces/${workspaceId}/index/changes`, { paths });
+  }
+  retrieve(workspaceId: string, q: string, k = 8) {
+    return this.req<{ query: string; results: RetrievalResult[] }>(
+      "GET", `/workspaces/${workspaceId}/retrieve?q=${encodeURIComponent(q)}&k=${k}`);
   }
 
   /**

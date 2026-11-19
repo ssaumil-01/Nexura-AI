@@ -9,9 +9,12 @@ def prompt_version() -> str:
 
 def build_prompt(task: dict, failure_text: str, error_type: str, strategy_hint: str, files: dict[str, str]) -> str:
     file_block = "\n".join(f"--- {name} ---\n{body}" for name, body in files.items()) or "(no files)"
+    v2 = config.PATCH_MODE == "v2"
+    tools = ("read_file, apply_patch (preferred for fixes: each search_text must match exactly ONE place), patch_file, write_file (existing files only), "
+             "run_command, list_directory, verify_code_syntax") if v2 else         "read_file, patch_file, write_file (existing files only), run_command, list_directory, verify_code_syntax"
     return f"""You are a Debugger Agent. (prompt version {prompt_version()})
 Fix ONLY the failure below. Add NO features. Do not create new files, edit plans, or install packages.
-Allowed tools: read_file, patch_file, write_file (existing files only), run_command, list_directory, verify_code_syntax.
+Allowed tools: {tools}.
 Files shown below count as already read; read_file any other file before changing it. Do not call task_complete: the checks are re-run automatically after your fixes.
 
 ========================

@@ -13,11 +13,11 @@ from core.safety import redact_secrets
 from core.schemas import FileChange
 from core.state_manager import StateManager, make_checkpointer
 from core.task_manager import load_tasks, render_plan_md
-from tests.conftest import tool_call_msg
+from tests.conftest import ALWAYS_OK, tool_call_msg
 
 PLAN = {"project_id": "p", "goal": "g", "steps": [
     {"step_id": 1, "title": "first", "description": "d1", "dependencies": [], "acceptance": [{"type": "file_exists", "path": "a.txt"}]},
-    {"step_id": 2, "title": "second", "description": "d2", "dependencies": [1], "acceptance": []}]}
+    {"step_id": 2, "title": "second", "description": "d2", "dependencies": [1], "acceptance": ALWAYS_OK}]}
 
 
 @pytest.fixture
@@ -63,8 +63,8 @@ SECOND = [tool_call_msg("task_complete", {"summary": "ok"}, "c3")]
 
 def test_schema_version_and_round_trip(tmp_path):
     sm = StateManager(tmp_path / "x.db")
-    assert sm.schema_version() == 2
-    assert StateManager(tmp_path / "x.db").schema_version() == 2  # re-open: no re-migration
+    assert sm.schema_version() == 3
+    assert StateManager(tmp_path / "x.db").schema_version() == 3  # re-open: no re-migration
     sm.upsert_project("p", "/w")
     sm.create_run("r1", "p", "prompt", "ask_risky")
     sm.save_plan("r1", PLAN, load_tasks(PLAN))

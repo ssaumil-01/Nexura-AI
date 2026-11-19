@@ -8,8 +8,8 @@ const root = join(here, "..", "..");
 const out = join(here, "..", "backend");
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-for (const f of ["server.py", "config.py", "requirements.txt"]) cpSync(join(root, f), join(out, f));
-for (const d of ["core", "agents", "tools"]) {
+for (const f of ["server.py", "config.py", "requirements.txt", "requirements-index.txt"]) cpSync(join(root, f), join(out, f));
+for (const d of ["core", "agents", "tools", "rag"]) {
   if (!existsSync(join(root, d))) throw new Error(`missing backend folder: ${d}`);
   cpSync(join(root, d), join(out, d), { recursive: true, filter: (s) => !s.includes("__pycache__") && !s.endsWith(".pyc") });
 }

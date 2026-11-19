@@ -5,8 +5,12 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 import config
-from core.processes import ProcessManager
 from core.safety import rel_key
+
+
+def _default_backend():
+    from core.execution_backend import make_backend   # lazy: execution_backend imports this module
+    return make_backend()
 
 
 class Limits(BaseModel):
@@ -31,6 +35,9 @@ class ProjectContext(BaseModel):
     trusted: bool = True           # False (untrusted VS Code workspace): every mutating action is rejected
     dirty_files: set[str] = Field(default_factory=set)   # files with unsaved/uncommitted user changes: never touched
     git_checkpoints: bool = False  # take a git checkpoint before each task (set by the runner)
+    extra_commands: list[str] = Field(default_factory=list)   # executables the user approved for THIS workspace (V2-5.2)
+    baseline: Optional[dict] = Field(default=None, exclude=True)   # test results before the run (V2-5.3)
+    baseline_command: Optional[str] = None   # the test command the user approved running before/after the run (None = no baseline, '' = asked for but none found)
 
     # persistence (all optional so tools/tests work without them)
     project_id: Optional[str] = None
@@ -42,7 +49,8 @@ class ProjectContext(BaseModel):
     files_read: set[str] = Field(default_factory=set, exclude=True)
     known_hashes: dict[str, str] = Field(default_factory=dict, exclude=True)   # key -> sha256 Nexura last saw/wrote
     external_edits: set[str] = Field(default_factory=set, exclude=True)        # keys the user edited during the run
-    processes: Any = Field(default_factory=ProcessManager, exclude=True)
+    backend: Any = Field(default_factory=lambda: _default_backend(), exclude=True)   # core.execution_backend
+    indexer: Any = Field(default=None, exclude=True)   # rag.indexer.Indexer when code indexing is enabled (V2)
 
     def emit(self, type: str, task_id: int | None = None, agent: str = "orchestrator", **data) -> None:
         """Record a lifecycle event in the state DB and the JSONL log (whichever are attached)."""
@@ -50,6 +58,11 @@ class ProjectContext(BaseModel):
             self.state_manager.add_event(self.run_id, type, task_id, **data)
         if self.logger is not None:
             self.logger.log(agent=agent, task_id=task_id, result=type, output_summary=str(data) if data else "")
+
+    @property
+    def processes(self):
+        """V1 name for the backend (it owns the background processes)."""
+        return self.backend
 
     def key(self, full: Path | str) -> str:
         return rel_key(self.root, full)
@@ -120,6 +133,8 @@ class Step(BaseModel):
     dependencies: list[int] = Field(description="step_ids of EARLIER steps this step depends on", default_factory=list)
     acceptance: list[Acceptance] = Field(description="Checks that prove this step is done", default_factory=list)
     documentation_only: bool = Field(description="True only if the step writes docs and nothing can be verified", default=False)
+    files: list[str] = Field(description="Existing project files this step edits (workspace-relative paths); only for existing projects", default_factory=list)
+    new_files: list[str] = Field(description="New files this step creates (workspace-relative paths); only for existing projects", default_factory=list)
 
 
 class ExecutionPlan(BaseModel):

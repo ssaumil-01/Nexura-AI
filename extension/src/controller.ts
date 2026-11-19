@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import { ApiClient, ApiError, SseEvent } from "./api";
 import { BackendManager, SECRET_GEMINI } from "./backend";
 import { DiffProvider } from "./diff";
+import type { ProjectManager } from "./project";
 import type { ApprovalView, LogLine, RunView, UiState } from "./protocol";
 
 const MAX_LOG = 300;
@@ -24,6 +25,7 @@ export class RunController implements vscode.Disposable {
   private editTimer: NodeJS.Timeout | undefined;
   private hasKey = false;
   private lastApprovalKey = "";
+  project: ProjectManager | undefined;   // set by activate(): profile, index status and the baseline question
   readonly status: vscode.StatusBarItem;
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.emitter.event;
@@ -51,6 +53,8 @@ export class RunController implements vscode.Disposable {
       log: this.log,
       hasGeminiKey: this.hasKey,
       workspace: vscode.workspace.workspaceFolders?.[0]?.name,
+      project: this.project?.project,
+      index: this.project?.index,
     };
   }
 
@@ -67,6 +71,10 @@ export class RunController implements vscode.Disposable {
     this.log.push({ id: ++this.logId, kind, text });
     if (this.log.length > MAX_LOG) this.log.splice(0, this.log.length - MAX_LOG);
     this.out.appendLine(`[${kind}] ${text}`);
+  }
+
+  refresh(): void {
+    this.render();
   }
 
   private render(): void {
@@ -123,12 +131,13 @@ export class RunController implements vscode.Disposable {
     const dirtyFiles = vscode.workspace.textDocuments
       .filter((d) => d.isDirty && d.uri.scheme === "file" && !d.isUntitled)
       .map((d) => rel(d.uri));
+    const baseline = await this.askBaseline();
     let gitInit = false;
     let dirtyPolicy: "checkpoint" | "abort" = "abort";
     for (;;) {
       try {
         const { run_id } = await client.createRun({
-          workspace_id, prompt, git_init: gitInit, dirty_policy: dirtyPolicy, dirty_files: dirtyFiles,
+          workspace_id, prompt, git_init: gitInit, dirty_policy: dirtyPolicy, dirty_files: dirtyFiles, baseline,
           approval_level: vscode.workspace.getConfiguration("nexura").get<string>("approvalLevel") ?? "ask_risky",
         });
         this.attach(run_id, prompt, client);
@@ -153,6 +162,24 @@ export class RunController implements vscode.Disposable {
         }
       }
     }
+  }
+
+  /** Running the project's own tests before and after a run finds regressions; it needs the user's yes (remembered on request). */
+  private async askBaseline(): Promise<boolean> {
+    const mode = vscode.workspace.getConfiguration("nexura").get<string>("baseline") ?? "ask";
+    if (mode === "never") return false;
+    let cmd: string | undefined;
+    try {
+      cmd = (await this.project?.profile())?.profile.test_commands?.[0];
+    } catch {
+      return false;
+    }
+    if (!cmd) return false;
+    if (mode === "always") return true;
+    const pick = await vscode.window.showInformationMessage(
+      `Run the project's tests (${cmd}) before and after this run to catch regressions?`, { modal: false }, "Yes", "Not this time", "Always");
+    if (pick === "Always") await vscode.workspace.getConfiguration("nexura").update("baseline", "always", vscode.ConfigurationTarget.Workspace);
+    return pick === "Yes" || pick === "Always";
   }
 
   private attach(runId: string, prompt: string, client: ApiClient): void {
@@ -209,6 +236,30 @@ export class RunController implements vscode.Disposable {
       case "run_finished":
         this.add(d.run_status === "completed" ? "ok" : "error", `Run finished: ${d.run_status}`);
         break;
+      case "retrieval": {   // debug detail: Output channel only, not the sidebar log
+        const hits = (d.results ?? []).filter((r: any) => r.included).map((r: any) => `${r.path}:${r.lines} [${(r.sources ?? []).join("+")}]`);
+        this.out.appendLine(`[debug] task ${d.task_id} retrieval: ${hits.length} chunk(s) ${hits.join(", ")}`);
+        break;
+      }
+      case "retrieval_fallback":
+        this.add("warn", `Retrieval unavailable, using the basic context: ${d.reason}`);
+        break;
+      case "index_update_failed":
+        this.out.appendLine(`[debug] index update failed: ${d.error}`);
+        break;
+      case "baseline_recorded":
+        this.add("info", `Baseline tests: ${d.passed ?? "?"} passing, ${d.failed ?? 0} failing before the run (${d.command}).`);
+        break;
+      case "baseline_skipped":
+        this.add("warn", `Baseline tests skipped: ${d.reason}`);
+        break;
+      case "regression_detected":
+        this.add("error", String(d.message));
+        void vscode.window.showWarningMessage(`Nexura: ${d.message}`, "Undo run").then((p) => (p ? this.undo("run") : undefined));
+        break;
+      case "regression_check":
+        this.add("ok", String(d.message));
+        break;
     }
     this.syncing = this.syncing.then(() => this.sync(client));
   }
@@ -243,6 +294,30 @@ export class RunController implements vscode.Disposable {
     if (d) await this.diffs.open(d);
   }
 
+  /** "Nexura: Debug Retrieval": show what the code index returns for a query (read-only). */
+  async debugRetrieval(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      void vscode.window.showWarningMessage("Nexura: open a folder first.");
+      return;
+    }
+    const q = await vscode.window.showInputBox({ prompt: "Nexura: what should retrieval look for?", ignoreFocusOut: true });
+    if (!q?.trim()) return;
+    const c = await this.client();
+    if (!c) return;
+    try {
+      const { workspace_id } = await c.registerWorkspace(folder.uri.fsPath, vscode.workspace.isTrusted);
+      const { results } = await c.retrieve(workspace_id, q.trim());
+      this.out.appendLine(`[retrieval] "${q.trim()}": ${results.length} result(s)`);
+      for (const r of results) {
+        this.out.appendLine(`  ${r.score.toFixed(4)}  ${r.path}:${r.lines[0]}-${r.lines[1]}  ${r.symbol || r.kind}  [${r.sources.join("+")}]  ${r.reason}`);
+      }
+      this.out.show(true);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Nexura retrieval: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   private async client(): Promise<ApiClient | undefined> {
     try {
       return await this.backend.ready();
@@ -268,8 +343,8 @@ export class RunController implements vscode.Disposable {
   decidePlan(decision: "approve" | "feedback", text?: string) {
     return this.guard((c, id) => c.planDecision(id, decision, text));
   }
-  async approve(decision: "approve" | "reject", note?: string) {
-    await this.guard((c, id) => c.approve(id, decision, note));
+  async approve(decision: "approve" | "reject", note?: string, rejectedFiles: string[] = []) {
+    await this.guard((c, id) => c.approve(id, decision, note, rejectedFiles));
     void vscode.commands.executeCommand("workbench.files.action.refreshFilesExplorer");
   }
   stop() {

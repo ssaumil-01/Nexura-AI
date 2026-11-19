@@ -15,7 +15,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-TASKS_FILE = Path(__file__).with_name("tasks.yaml")
+TASK_FILES = [Path(__file__).with_name("tasks.yaml"), Path(__file__).with_name("tasks_v2.yaml")]
+PLAN_CHECK_TYPES = {"file_exists", "syntax_ok", "command_ok", "output_contains", "http_status"}   # what verification knows
 TAG = re.compile(r"\[oracle:([a-z_]+)\]")
 
 
@@ -126,6 +127,10 @@ SOLUTIONS: dict[str, list[tuple[str, dict]]] = {
                              'def test_rect_area():\n    assert rect_area(2, 3) == 6\n')],
 }
 
+from oracle_v2 import SOLUTIONS_V2  # noqa: E402
+
+SOLUTIONS.update(SOLUTIONS_V2)
+
 
 def _norm(s: str) -> str:
     return " ".join(s.split())
@@ -133,7 +138,7 @@ def _norm(s: str) -> str:
 
 def _tasks() -> dict[str, dict]:
     import yaml
-    return {t["id"]: t for t in yaml.safe_load(TASKS_FILE.read_text(encoding="utf-8")) if not t.get("smoke")}
+    return {t["id"]: t for f in TASK_FILES for t in yaml.safe_load(f.read_text(encoding="utf-8")) if not t.get("smoke")}
 
 
 def _plan(prompt: str) -> str:
@@ -142,7 +147,7 @@ def _plan(prompt: str) -> str:
         if _norm(task["prompt"]) in text:
             return json.dumps({"project_id": tid, "goal": task["title"], "steps": [{
                 "step_id": 1, "title": f"[oracle:{tid}] {task['title']}", "description": task["prompt"], "dependencies": [],
-                "acceptance": task["checks"]}]})
+                "acceptance": [c for c in task["checks"] if c["type"] in PLAN_CHECK_TYPES]}]})
     raise RuntimeError("oracle: no eval task matches this request")
 
 
@@ -160,12 +165,19 @@ class OracleModel(BaseChatModel):
         steps = SOLUTIONS.get(m.group(1)) if m else None
         if m and m.group(1) in os.environ.get("ORACLE_SABOTAGE", "").split(","):   # self-test: a wrong solution must FAIL the eval
             steps = [_w("noop.txt", "this task was deliberately not solved\n")]
-        # Round 2 (a tool result is in the conversation) or the debugger: finish, or report that the oracle is stuck.
-        if steps is None or any(x.type == "tool" for x in messages):
-            calls = [("task_complete", {"summary": "oracle done"})]
+        # Like a real agent: turn 1 reads the files it will change, turn 2 writes them (a batch is validated before any of it
+        # runs, so a read in the same batch does not count for read-before-write), then it asks to finish.
+        done = ("task_complete", {"summary": "oracle done"})
+        sent = {c["id"].split("-")[1] for x in messages if x.type == "ai" for c in (getattr(x, "tool_calls", None) or [])
+                if str(c.get("id", "")).startswith("oracle-")}
+        reads = [s for s in (steps or []) if s[0] == "read_file"]
+        if steps is None or "w" in sent:
+            calls, tag = [done], "d"
+        elif reads and "r" not in sent:
+            calls, tag = reads, "r"
         else:
-            calls = [*steps, ("task_complete", {"summary": "oracle done"})]
-        msg = AIMessage(content="", tool_calls=[{"name": n, "args": a, "id": f"oracle-{i}"} for i, (n, a) in enumerate(calls)])
+            calls, tag = [s for s in steps if s[0] != "read_file"] + [done], "w"
+        msg = AIMessage(content="", tool_calls=[{"name": n, "args": a, "id": f"oracle-{tag}-{i}"} for i, (n, a) in enumerate(calls)])
         return ChatResult(generations=[ChatGeneration(message=msg)])
 
 

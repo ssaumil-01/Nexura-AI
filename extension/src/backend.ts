@@ -118,6 +118,21 @@ export class BackendManager implements vscode.Disposable {
     return py;
   }
 
+  /** The optional indexing packages (tree-sitter, chromadb, fastembed). Installed only after the user agreed, into the interpreter
+   *  the backend uses (the private virtual environment unless the user chose their own). */
+  async installIndexPackages(): Promise<void> {
+    const python = await this.resolvePython();
+    const req = path.join(this.backendDir(), "requirements-index.txt");
+    if (!fs.existsSync(req)) throw new Error("requirements-index.txt is missing from the extension.");
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Nexura: installing the indexing packages into ${python}`, cancellable: false },
+      async (progress) => {
+        progress.report({ message: "this downloads a few hundred MB once..." });
+        await this.run(python, ["-m", "pip", "install", "--disable-pip-version-check", "-r", req]);
+      },
+    );
+  }
+
   private run(cmd: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       const p = spawn(cmd, args, { windowsHide: true });
@@ -145,7 +160,11 @@ export class BackendManager implements vscode.Disposable {
       CODER_MODEL_NAME: cfg.get<string>("model.coder") || "gemini-3.1-flash-lite-preview",
       PLANNER_MODEL_NAME: cfg.get<string>("model.planner") || "gemini-3.1-flash-lite-preview",
       NEXURA_EXTRA_PROTECTED: JSON.stringify(cfg.get<string[]>("protectedPaths") ?? []),
+      NEXURA_INDEXING_ENABLED: cfg.get<boolean>("indexing.enabled") ? "true" : "false",
+      NEXURA_RETRIEVAL_MODE: cfg.get<string>("retrievalMode") || "v1",
+      NEXURA_PATCH_MODE: cfg.get<string>("patchMode") || "v1",
     };
+    if (this.ctx.globalState.get<boolean>("nexura.modelDownloadConsent")) env.NEXURA_ALLOW_MODEL_DOWNLOAD = "1";
     const gemini = await this.ctx.secrets.get(SECRET_GEMINI);
     const groq = await this.ctx.secrets.get(SECRET_GROQ);
     if (gemini) env.GOOGLE_API_KEY = gemini;

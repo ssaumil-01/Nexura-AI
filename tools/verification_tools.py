@@ -1,5 +1,4 @@
 import os
-import subprocess
 import json
 import requests
 from langchain_core.runnables import RunnableConfig
@@ -15,35 +14,39 @@ def verify_code_syntax(file_path: str, config: RunnableConfig) -> str:
     Supports .py, .js, .cpp, .c, and .json files.
     Use this to ensure there are no indentation or basic syntax errors before marking the task complete."""
     
+    ctx = get_project(config)
     try:
-        full_path = str(resolve_in_root(get_project(config).root, file_path))
+        full_path = str(resolve_in_root(ctx.root, file_path))
     except SafetyError as e:
         return err(e.code, e.message)
     if not os.path.exists(full_path):
         return f"ERROR: File '{file_path}' does not exist."
 
     ext = os.path.splitext(full_path)[1].lower()
+
+    def check(argv):   # through the execution backend, like every other command
+        return ctx.backend.run(argv, str(ctx.root), ctx.limits.command_timeout_s, max_bytes=ctx.limits.max_tool_output_bytes, echo=False)
     
     try:
         if ext == ".py":
             # Strict python compilation check
-            result = subprocess.run(["python", "-m", "py_compile", full_path], capture_output=True, text=True)
-            if result.returncode == 0:
+            result = check(["python", "-m", "py_compile", full_path])
+            if result.ok:
                 return "Syntax check passed: No errors found in Python file."
-            return f"SyntaxError in Python file:\n{result.stderr}"
+            return f"SyntaxError in Python file:\n{result.stdout}"
             
         elif ext == ".js":
-            result = subprocess.run(["node", "-c", full_path], capture_output=True, text=True)
-            if result.returncode == 0:
+            result = check(["node", "-c", full_path])
+            if result.ok:
                 return "Syntax check passed: No errors found in JavaScript file."
-            return f"SyntaxError in JS file:\n{result.stderr}"
+            return f"SyntaxError in JS file:\n{result.stdout}"
             
         elif ext in [".cpp", ".c", ".h"]:
             # Try gcc, fallback if not exists
-            result = subprocess.run(["g++", "-fsyntax-only", full_path], capture_output=True, text=True)
-            if result.returncode == 0:
+            result = check(["g++", "-fsyntax-only", full_path])
+            if result.ok:
                 return "Syntax check passed: No errors found in C/C++ file."
-            return f"SyntaxError in C/C++ file:\n{result.stderr}"
+            return f"SyntaxError in C/C++ file:\n{result.stdout}"
             
         elif ext == ".json":
             with open(full_path, "r", encoding="utf-8") as f:
