@@ -77,15 +77,16 @@ def get_summary(ctx: ProjectContext, profile: ProjectProfile, files: list[str], 
 
 
 def effective_profile(ctx: ProjectContext) -> ProjectProfile:
-    """Detected profile with the user's overrides applied (detection is stored, re-run when nothing is stored yet)."""
+    """Detected profile with the user's overrides applied. Re-detected on every call (cheap, deterministic) so a project
+    that grew since the first run (e.g. one Nexura created from an empty folder) gets its new test command; overrides are kept."""
+    detected = detect_profile(ctx.root)
     sm, pid = ctx.state_manager, ctx.project_id
-    stored = sm.get_profile(pid) if sm is not None and pid else None
-    if stored is None:
-        detected = detect_profile(ctx.root)
-        if sm is not None and pid:
-            sm.save_profile(pid, detected.model_dump())
+    if sm is None or not pid:
         return detected
-    return apply_overrides(ProjectProfile(**stored["detected"]), stored.get("overrides"))
+    stored = sm.get_profile(pid)
+    if stored is None or stored["detected"] != detected.model_dump():
+        sm.save_profile(pid, detected.model_dump())
+    return apply_overrides(detected, (stored or {}).get("overrides"))
 
 
 def path_exists_fn(root: Path | str):

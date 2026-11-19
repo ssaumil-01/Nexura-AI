@@ -111,12 +111,12 @@ def test_all_done_is_completed_and_exit_zero(g, fake_llm):
 # ─── bug 3: LLM failure ─────────────────────────────────────
 
 def test_bug3_llm_exhaustion_fails_task_and_skips_rest(g, fake_llm):
-    fake_llm.script[:] = [Exception("429 RESOURCE_EXHAUSTED")] * 3
+    fake_llm.script[:] = [Exception("429 RESOURCE_EXHAUSTED")] * app_config.LLM_MAX_ATTEMPTS
     v = values(g())
     assert v["run_status"] == "failed"
     assert v["task_errors"]["1"].startswith("LLM_UNAVAILABLE")
     assert v["task_status"]["2"] == "skipped"
-    assert len(g.sleeps) == app_config.MAX_RETRIES - 1  # no sleep after the last attempt
+    assert len(g.sleeps) == app_config.LLM_MAX_ATTEMPTS - 1  # no sleep after the last attempt
 
 
 def test_backoff_honors_retry_delay_and_grows():

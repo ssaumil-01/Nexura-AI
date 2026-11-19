@@ -45,7 +45,7 @@ def test_invoke_retries_a_timeout_then_succeeds(monkeypatch):
 
 def test_invoke_reports_persistent_overload_and_hard_errors_differently(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
-    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("503 UNAVAILABLE")] * 3, calls=[]))
+    monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("503 UNAVAILABLE")] * config.LLM_MAX_ATTEMPTS, calls=[]))
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_UNAVAILABLE")
     monkeypatch.setattr(llm, "_override", FakeChatModel(script=[Exception("401 API key not valid")], calls=[]))
     assert llm.invoke("coder", ["hi"], "1")[1].startswith("LLM_ERROR")

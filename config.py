@@ -50,6 +50,7 @@ def env_bool(name: str, default: bool, env=None) -> bool:
 
 # --- Limits ------------------------------------------------
 MAX_RETRIES = 3
+LLM_MAX_ATTEMPTS = env_int("NEXURA_LLM_MAX_ATTEMPTS", 6)   # tries per model call on 429/5xx; backoff 5,10,20,40,60 s
 MAX_TOOL_CALLS_PER_TASK = 15
 MAX_REPLANS = 5
 FAILURE_POLICY = os.getenv("NEXURA_FAILURE_POLICY", "stop")  # stop | continue
@@ -126,6 +127,8 @@ CHECKPOINT_DB_PATH = DATA_DIR / "checkpoints.db"  # LangGraph checkpoints
 RETRIEVAL_MODE = env_choice("NEXURA_RETRIEVAL_MODE", "v1", ("v1", "v2"))   # v1 = V1 context builder, v2 = retrieval
 INDEXING_ENABLED = env_bool("NEXURA_INDEXING_ENABLED", False)
 PATCH_MODE = env_choice("NEXURA_PATCH_MODE", "v1", ("v1", "v2"))
+if RETRIEVAL_MODE == "v2":
+    PROMPT_VERSIONS.update(planner="7")   # + the CHECK QUALITY section
 if PATCH_MODE == "v2":
     PROMPT_VERSIONS.update(coder="3", debugger="2")   # the coder/debugger prompts prefer apply_patch in v2
 EMBEDDING_MODEL = os.getenv("NEXURA_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")   # local only; downloaded after consent

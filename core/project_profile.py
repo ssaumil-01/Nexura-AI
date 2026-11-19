@@ -50,10 +50,13 @@ def _add(lst: list[str], *items: str) -> None:
 def _python(root: Path, p: ProjectProfile) -> bool:
     pyproject = _text(root / "pyproject.toml")
     reqs = [f for f in sorted(root.glob("requirements*.txt"))[:5]]
-    if not (pyproject or reqs or (root / "setup.py").exists() or (root / "Pipfile").exists()):
+    scripts = sorted(root.glob("*.py"))[:50]   # plain-scripts projects (no manifest), like the ones Nexura creates itself
+    if not (pyproject or reqs or (root / "setup.py").exists() or (root / "Pipfile").exists() or scripts):
         return False
     _add(p.languages, "python")
     deps = " ".join(_text(f).lower() for f in reqs)
+    if not (pyproject or reqs):   # no manifest: the scripts' own imports name the frameworks
+        deps += " " + " ".join(re.findall(r"^\s*(?:import|from)\s+(\w+)", "\n".join(_text(f) for f in scripts), re.M)).lower()
     toml: dict = {}
     if pyproject:
         try:
@@ -75,7 +78,8 @@ def _python(root: Path, p: ProjectProfile) -> bool:
             _add(p.frameworks, label)
     prefix = {"poetry": "poetry run ", "uv": "uv run "}.get(manager, "")
     has_pytest = ("pytest" in deps or "pytest" in tool or (root / "pytest.ini").exists() or (root / "conftest.py").exists()
-                  or "pytest" in _text(root / "tox.ini") or (root / "tests").is_dir())
+                  or "pytest" in _text(root / "tox.ini") or (root / "tests").is_dir()
+                  or any("pytest" in _text(f) for f in scripts if f.name.startswith("test_")))
     if has_pytest:
         _add(p.test_commands, f"{prefix}python -m pytest" if not prefix else f"{prefix}pytest")
     elif (root / "tests").is_dir() or any(root.glob("test_*.py")):

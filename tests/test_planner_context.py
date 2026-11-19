@@ -96,6 +96,20 @@ def test_user_overrides_reach_the_planner_context(env):
     assert build_planner_context(ctx, "x", call_text)["profile"]["test_commands"] == ["make test"]
 
 
+def test_profile_is_redetected_when_the_project_grows(tmp_path):
+    sm = StateManager(tmp_path / "db.sqlite")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ctx = ProjectContext(run_id="r", project_id="g", root=ws, state_manager=sm)
+    assert effective_profile(ctx).test_commands == []            # first run: empty folder
+    sm.save_profile("g", sm.get_profile("g")["detected"], overrides={"lint_command": "ruff check ."})
+    (ws / "todo.py").write_text("def f():\n    pass\n")
+    (ws / "test_todo.py").write_text("import pytest\n")
+    p = effective_profile(ctx)
+    assert p.test_commands == ["python -m pytest"] and p.lint_command == "ruff check ."
+    assert sm.get_profile("g")["detected"]["test_commands"] == ["python -m pytest"]
+
+
 # ─── the prompt and plan validation ─────────────────────────
 
 def plan_json(files=(), new_files=(), command="python -m pytest -q"):

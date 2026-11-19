@@ -136,6 +136,7 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
     plan_dict["warnings"] = list(getattr(planner, "last_warnings", []) or [])   # e.g. acceptance checks that had to be dropped
     tasks = plan_dict.get("steps", [])
     print(f"[Planner] Generated {len(tasks)} tasks for project: {plan_dict.get('project_id', 'unknown')}")
+    _print_plan(plan_dict, tasks)
     if ctx.state_manager is not None:
         ctx.state_manager.save_plan(ctx.run_id, plan_dict, load_tasks(plan_dict), feedback=feedback)
     return {
@@ -145,18 +146,7 @@ def planner_node(state: NexuraState, config: RunnableConfig) -> dict:
     }
 
 
-def route_start(state: NexuraState) -> str:
-    """A resumed run already has an approved plan: skip planning and review."""
-    return "task_picker" if state.get("resuming") else "planner"
-
-
-def route_after_planner(state: NexuraState) -> str:
-    return END if state.get("run_status") == "failed" else "review_plan"
-
-
-def review_plan_node(state: NexuraState, config: RunnableConfig) -> Command:
-    """Displays the plan and asks the user for approval or feedback."""
-    plan, tasks = state["plan"], state["tasks"]
+def _print_plan(plan: dict, tasks: list[dict]) -> None:
     print("\n" + "=" * 50 + "\nGENERATED PLAN\n" + "=" * 50)
     print(f"Project: {plan.get('project_id', 'unknown')}\nGoal: {plan.get('goal', '')}\n\nSteps ({len(tasks)}):")
     for w in plan.get("warnings", []):
@@ -169,6 +159,19 @@ def review_plan_node(state: NexuraState, config: RunnableConfig) -> Command:
             print(f"     check: {_short({k: v for k, v in acc.items() if v is not None}, 120)}")
     print("=" * 50)
 
+
+def route_start(state: NexuraState) -> str:
+    """A resumed run already has an approved plan: skip planning and review."""
+    return "task_picker" if state.get("resuming") else "planner"
+
+
+def route_after_planner(state: NexuraState) -> str:
+    return END if state.get("run_status") == "failed" else "review_plan"
+
+
+def review_plan_node(state: NexuraState, config: RunnableConfig) -> Command:
+    """Asks the user for approval or feedback (the plan was printed by planner_node: this node re-runs from the top when
+    LangGraph resumes it after the interrupt, so printing here showed the plan twice)."""
     user_input = interrupt("Review the plan above. Type 'yes' to approve, or provide feedback to re-plan:")
     if user_input.strip().lower() in ["yes", "y", "approve", ""]:
         print("[Review] Plan approved! Starting execution...")

@@ -76,6 +76,19 @@ def test_profile_makefile_and_readme_hints(tmp_path):
     assert detect_profile(other).test_commands == ["python -m pytest -q"]
 
 
+def test_profile_plain_scripts_project_without_manifest(tmp_path):
+    write(tmp_path, "todo.py", "def add(x):\n    return x\n")
+    write(tmp_path, "app.py", "import streamlit as st\nfrom todo import add\n")
+    write(tmp_path, "test_todo.py", "import pytest\nfrom todo import add\n\ndef test_add():\n    assert add(1) == 1\n")
+    p = detect_profile(tmp_path)
+    assert p.languages == ["python"] and p.test_commands == ["python -m pytest"]
+    assert p.frameworks == ["Streamlit"] and p.run_commands == ["streamlit run app.py"]
+    other = tmp_path / "u"
+    write(other, "calc.py", "")
+    write(other, "test_calc.py", "import unittest\n")
+    assert detect_profile(other).test_commands == ["python -m unittest"]
+
+
 def test_profile_unknown_project_is_empty_and_never_raises(tmp_path):
     write(tmp_path, "notes.txt", "hello")
     write(tmp_path, "package.json", "{not json")

@@ -49,6 +49,17 @@ CODE RELEVANT TO THE REQUEST (retrieved, reference only):
 {hits}
 """
 
+CHECK_QUALITY_SECTION = """
+========================
+CHECK QUALITY (V2)
+========================
+- A check must prove the step WORKS, not only that a file exists. syntax_ok and file_exists alone are NOT enough for a step
+  that adds or changes behaviour: add at least one command_ok / output_contains / http_status check that runs the new code,
+  e.g. the project's tests or `python -c "from todo import add_task; ..."` with an assert.
+- Put logic in plain functions that tests can call, and keep UI files thin.
+- When a step writes or changes tests, its check runs them (`python -m pytest -q`).
+"""
+
 PROMPT_TEMPLATE = """You are a senior software architect designing execution plans for an autonomous AI system.
 
 Your task is to convert a user request into a STRICT, structured execution plan.
@@ -195,7 +206,7 @@ class PlannerAgent:
 
     def _call_with_retry(self, prompt: str) -> str:
         """Transient API errors (rate limit, 5xx 'high demand', timeouts) are retried with backoff; others fail at once."""
-        for attempt in range(config.MAX_RETRIES):
+        for attempt in range(config.LLM_MAX_ATTEMPTS):
             try:
                 return self.call_llm(prompt)
             except Exception as e:
@@ -203,7 +214,7 @@ class PlannerAgent:
                 quota = quota_message(text)
                 if quota:
                     raise RuntimeError(quota) from e
-                if attempt + 1 >= config.MAX_RETRIES or not TRANSIENT.search(text):
+                if attempt + 1 >= config.LLM_MAX_ATTEMPTS or not TRANSIENT.search(text):
                     raise
                 wait = backoff_delay(attempt, text)
                 print(f"[Planner] transient API error ({text[:80]}...), retrying in {wait:.0f}s")
@@ -236,6 +247,8 @@ class PlannerAgent:
         exists = (context or {}).get("exists")
         if context:
             prompt += self.existing_section(context)
+        if config.RETRIEVAL_MODE == "v2":   # V1 keeps its planner prompt byte for byte
+            prompt += CHECK_QUALITY_SECTION
         if feedback and previous_plan:
             import json
             prompt += f"""

@@ -145,9 +145,10 @@ def test_planner_retries_transient_api_errors_with_backoff(planner, monkeypatch)
 
 def test_planner_gives_up_on_persistent_transient_errors(planner, monkeypatch):
     import time
+    import config
     from agents.planner import PlanError
     monkeypatch.setattr(time, "sleep", lambda s: None)
-    planner.replies = [RuntimeError("503 UNAVAILABLE")] * 3
+    planner.replies = [RuntimeError("503 UNAVAILABLE")] * config.LLM_MAX_ATTEMPTS
     with pytest.raises(PlanError, match="LLM call failed"):
         planner.plan("x", planner.path)
 

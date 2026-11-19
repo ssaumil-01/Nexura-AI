@@ -83,7 +83,7 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
     """Call the model. Returns (response, None) or (None, failure_reason). Rate limits retry with backoff."""
     model = model_for(role)
     detail = ""
-    for attempt in range(config.MAX_RETRIES):
+    for attempt in range(config.LLM_MAX_ATTEMPTS):
         try:
             response = llm_with_tools(role).invoke(messages)
             if on_log:
@@ -108,9 +108,9 @@ def invoke(role: str, messages: list, prompt_version: str, on_log=None) -> tuple
                     on_log(role=role, prompt_version=prompt_version, model=model, result="error")
                 return None, f"LLM_ERROR: {_short(err, 150)}"
             detail = _short(err, 150)
-            if attempt + 1 < config.MAX_RETRIES:
+            if attempt + 1 < config.LLM_MAX_ATTEMPTS:
                 wait = backoff_delay(attempt, err)
-                print(f"  [!] Rate limited (attempt {attempt + 1}/{config.MAX_RETRIES}). Waiting {wait:.1f}s...")
+                print(f"  [!] Rate limited (attempt {attempt + 1}/{config.LLM_MAX_ATTEMPTS}). Waiting {wait:.1f}s...")
                 time.sleep(wait)
     if on_log:
         on_log(role=role, prompt_version=prompt_version, model=model, result="rate_limited")

@@ -1,9 +1,12 @@
 """Objective task verification. A task is `done` only if this passes; the agent's task_complete is just a request."""
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
+import config
 from core import execution_manager as em
+from core.safety import SafetyError, resolve_in_root
 from core.schemas import Action, CheckResult, ProjectContext, VerificationResult
 
 SYNTAX_OK = re.compile(r"^Syntax check passed|not strictly supported")
@@ -89,4 +92,28 @@ def verify(task: dict, ctx: ProjectContext, changed_files: list[str], command_re
         if not checks:   # no checks, nothing changed, nothing run: "done" would be an unverified claim
             checks.append(CheckResult(type="nothing_verified", ok=False,
                                       detail="This step has no acceptance checks and no file was changed or command run. Make the change, then finish."))
+    if config.RETRIEVAL_MODE == "v2":
+        checks += [_streamlit_smoke(ctx, f) for f in changed_files if _imports_streamlit(ctx, f)]
     return VerificationResult(ok=all(c.ok for c in checks), checks=checks)
+
+
+STREAMLIT_IMPORT = re.compile(r"^\s*(?:import streamlit|from streamlit\b)", re.M)
+
+
+def _imports_streamlit(ctx: ProjectContext, rel: str) -> bool:
+    if not rel.endswith(".py") or Path(rel).name.startswith("test_"):
+        return False
+    try:
+        return bool(STREAMLIT_IMPORT.search(resolve_in_root(ctx.root, rel).read_text(encoding="utf-8", errors="replace")))
+    except (OSError, SafetyError):
+        return False
+
+
+def _streamlit_smoke(ctx: ProjectContext, rel: str) -> CheckResult:
+    """V2: syntax_ok cannot see a Streamlit page that crashes when it renders; run it once headless (Streamlit's own AppTest)."""
+    path = rel.replace("\\", "/")
+    cmd = (f'python -c "from streamlit.testing.v1 import AppTest; at = AppTest.from_file(\'{path}\', default_timeout=30).run(); '
+           f'assert not at.exception, [e.message for e in at.exception]; print(\'page rendered\')"')
+    r = _run("run_command", ctx, command=cmd)
+    return CheckResult(type="streamlit_smoke", ok=r.ok, detail=f"{path}: " + ("page renders without errors" if r.ok else
+                       f"the page crashed when rendered: {(r.stderr or r.stdout)[-600:]}"))
